@@ -10,8 +10,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
-# Dedicated thread pool for embedding operations
-_embedding_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="embedding")
+# Dedicated thread pool for embedding operations (scale to CPU cores)
+import os
+_embedding_executor = ThreadPoolExecutor(
+    max_workers=min(8, os.cpu_count() or 4),
+    thread_name_prefix="embedding",
+)
 
 
 class EmbeddingService:

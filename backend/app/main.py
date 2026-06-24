@@ -4,7 +4,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from slowapi.middleware import SlowAPIMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from contextlib import asynccontextmanager
 from app.core.database import init_db, AsyncSessionLocal
 from app.core.limiter import limiter
@@ -18,67 +17,26 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class RequestIDMiddleware(BaseHTTPMiddleware):
-    """Add request ID to all requests for tracing."""
-
-    async def dispatch(self, request: Request, call_next):
-        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
-        request.state.request_id = request_id
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
-        return response
-
-
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Add security headers to all responses."""
-
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "0"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-        return response
-
-
-class PerformanceMiddleware(BaseHTTPMiddleware):
-    """Track request processing time and log slow requests."""
-
-    async def dispatch(self, request: Request, call_next):
-        start = time.perf_counter()
-        response = await call_next(request)
-        duration = time.perf_counter() - start
-
-        # Add processing time header
-        response.headers["X-Process-Time"] = f"{duration:.4f}"
-
-        # Log slow requests (> 2 seconds)
-        if duration > 2.0:
-            logger.warning(
-                "Slow request: %s %s took %.2fs",
-                request.method,
-                request.url.path,
-                duration,
-            )
-
-        return response
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    # Startup — fast path, no blocking operations
     await init_db()
     async with AsyncSessionLocal() as session:
         await ensure_admin_user(session)
 
-    # Pre-load embedding model if configured
+    # Load workflow plugins (builtin + third-party)
+    # This replaces the old decorator-based registration in nodes/__init__.py
+    # Plugin loader registers processors via register_with_metadata() for tracking
     try:
-        from app.services.embedding_service import embedding_service
-        await embedding_service._load_model()
-        logger.info("Embedding model pre-loaded successfully")
+        from app.services.plugin_loader import plugin_loader
+        plugin_loader.load_all()
     except Exception as e:
-        logger.warning("Could not pre-load embedding model: %s", e)
+        logger.error("Plugin loading failed: %s", e)
+        # Fallback: use decorator-based registration if plugin loader fails
+        import app.services.workflow.nodes  # noqa: F401
+
+    # Embedding model loads lazily on first RAG request (not at startup)
+    logger.info("Application started. Embedding model will load on first use.")
 
     yield
 
@@ -90,25 +48,57 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    from app.core.config import get_settings as _get_settings
+    _settings = _get_settings()
+
+    # Disable API docs in production
+    docs_url = "/api/docs" if _settings.DEBUG else None
+    redoc_url = "/api/redoc" if _settings.DEBUG else None
+
+    from app.core.version import SYSTEM_VERSION
+
     app = FastAPI(
         title="Knowledge Base API",
-        version="0.1.0",
+        version=SYSTEM_VERSION,
         description="AI知识库管理系统 API - 提供文档管理、AI分析、RAG搜索、知识图谱、工作流编排等功能",
-        docs_url="/api/docs",
-        redoc_url="/api/redoc",
+        docs_url=docs_url,
+        redoc_url=redoc_url,
         lifespan=lifespan,
         contact={"name": "KB Team"},
         license_info={"name": "MIT"},
     )
 
-    # Request ID middleware (must be first)
-    app.add_middleware(RequestIDMiddleware)
+    # Combined middleware: request ID + security headers + performance tracking
+    # Using @app.middleware("http") avoids BaseHTTPMiddleware buffering issues
+    @app.middleware("http")
+    async def app_middleware(request: Request, call_next):
+        # Request ID
+        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        request.state.request_id = request_id
 
-    # Security headers middleware
-    app.add_middleware(SecurityHeadersMiddleware)
+        # Performance tracking
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration = time.perf_counter() - start
 
-    # Performance monitoring middleware
-    app.add_middleware(PerformanceMiddleware)
+        # Response headers
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Process-Time"] = f"{duration:.4f}"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "0"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+
+        # HSTS only in production (skip for localhost/development)
+        if not _settings.DEBUG:
+            response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
+
+        # Log slow requests (> 2 seconds)
+        if duration > 2.0:
+            logger.warning("Slow request: %s %s took %.2fs", request.method, request.url.path, duration)
+
+        return response
 
     # GZip compression middleware
     app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -147,6 +137,9 @@ def create_app() -> FastAPI:
     from app.api.comments import router as comments_router
     from app.api.approval import router as approval_router
     from app.api.prompts import router as prompts_router
+    from app.api.plugins import router as plugins_router
+    from app.api.maintenance import router as maintenance_router
+    from app.api.batch_tools import router as batch_tools_router
 
     app.include_router(auth_router)
     app.include_router(documents_router)
@@ -164,27 +157,63 @@ def create_app() -> FastAPI:
     app.include_router(comments_router)
     app.include_router(approval_router)
     app.include_router(prompts_router)
+    app.include_router(plugins_router)
+    app.include_router(maintenance_router)
+    app.include_router(batch_tools_router)
 
     # Mount MCP server with authentication (SSE transport at /mcp/sse)
     try:
-        from starlette.middleware.base import BaseHTTPMiddleware
-        from starlette.requests import Request as StarletteRequest
-        from starlette.responses import JSONResponse
+        from starlette.middleware.base import BaseHTTPMiddleware as _BaseHTTPMiddleware
+        from starlette.responses import JSONResponse as _JSONResponse
 
-        class MCPAuthMiddleware(BaseHTTPMiddleware):
-            """Require Bearer token for SSE MCP transport."""
-            async def dispatch(self, request: StarletteRequest, call_next):
+        class MCPAuthMiddleware(_BaseHTTPMiddleware):
+            """Require a valid *access* Bearer token for SSE MCP transport."""
+            async def dispatch(self, request, call_next):
+                from app.mcp.auth_context import set_user_id
+
                 auth = request.headers.get("Authorization", "")
                 if not auth.startswith("Bearer "):
-                    return JSONResponse({"error": "Unauthorized"}, status_code=401)
+                    return _JSONResponse({"error": "Unauthorized"}, status_code=401)
                 token = auth[7:]
                 try:
                     from app.core.security import decode_token
                     payload = decode_token(token)
-                    request.state.user_id = payload.get("sub")
+
+                    # Reject refresh tokens — only access tokens authenticate MCP
+                    if payload.get("type") != "access":
+                        return _JSONResponse({"error": "Invalid token type"}, status_code=401)
+
+                    user_id = payload.get("sub")
+                    if not user_id:
+                        return _JSONResponse({"error": "Invalid token"}, status_code=401)
+
+                    # Confirm the user still exists and is active
+                    from app.core.database import AsyncSessionLocal
+                    from app.models.user import User
+                    from sqlalchemy import select
+                    try:
+                        uid = int(user_id)
+                    except (TypeError, ValueError):
+                        return _JSONResponse({"error": "Invalid token"}, status_code=401)
+                    async with AsyncSessionLocal() as session:
+                        row = await session.execute(
+                            select(User.is_active).where(User.id == uid)
+                        )
+                        rec = row.first()
+                        if not rec or not rec[0]:
+                            return _JSONResponse({"error": "User disabled"}, status_code=401)
+
+                    request.state.user_id = user_id
+                    # Propagate identity to MCP tools via contextvar (closes IDOR)
+                    set_user_id(uid)
                 except Exception:
-                    return JSONResponse({"error": "Invalid token"}, status_code=401)
-                return await call_next(request)
+                    set_user_id(None)
+                    return _JSONResponse({"error": "Invalid token"}, status_code=401)
+                try:
+                    return await call_next(request)
+                finally:
+                    # Reset after the request so nothing leaks across requests
+                    set_user_id(None)
 
         from app.mcp.server import mcp as mcp_server
         app.mount("/mcp", MCPAuthMiddleware(mcp_server.sse_app()))
@@ -275,4 +304,32 @@ app = create_app()
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "version": "0.1.0"}
+    """Health check endpoint with system status."""
+    from app.core.version import SYSTEM_VERSION
+    from app.core.database import AsyncSessionLocal
+    from sqlalchemy import text
+
+    health_status = {
+        "status": "ok",
+        "version": SYSTEM_VERSION,
+        "timestamp": time.time(),
+        "checks": {}
+    }
+
+    # Database check
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        health_status["checks"]["database"] = "ok"
+    except Exception as e:
+        health_status["checks"]["database"] = f"error: {str(e)}"
+        health_status["status"] = "degraded"
+
+    # LLM service check (non-blocking)
+    try:
+        from app.services.llm_service import llm_service
+        health_status["checks"]["llm_configured"] = True
+    except Exception:
+        health_status["checks"]["llm_configured"] = False
+
+    return health_status

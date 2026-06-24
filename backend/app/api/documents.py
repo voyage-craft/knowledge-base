@@ -31,9 +31,16 @@ async def list_documents(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_dep),
 ):
-    query = select(Document).where(
-        Document.user_id == current_user.id,
-        Document.status != "deleted",
+    # Use optimized query with eager loading for tags
+    from sqlalchemy.orm import selectinload
+
+    query = (
+        select(Document)
+        .options(selectinload(Document.tags))
+        .where(
+            Document.user_id == current_user.id,
+            Document.status != "deleted",
+        )
     )
 
     if search:
@@ -60,15 +67,29 @@ async def list_documents(
             )
         )
 
-    # Count total
-    count_query = select(func.count()).select_from(query.subquery())
+    # Count total - use simpler query without subquery for better performance
+    count_query = select(func.count(Document.id)).where(
+        Document.user_id == current_user.id,
+        Document.status != "deleted",
+    )
+    if folder_id is not None:
+        count_query = count_query.where(Document.folder_id == folder_id)
+    if status_filter:
+        count_query = count_query.where(Document.status == status_filter)
+    if tag_id is not None:
+        count_query = count_query.where(
+            Document.id.in_(
+                select(document_tags.c.document_id).where(document_tags.c.tag_id == tag_id)
+            )
+        )
+
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
-    # Get page
+    # Get page with optimized ordering
     query = query.order_by(Document.updated_at.desc()).offset(offset).limit(limit)
     result = await db.execute(query)
-    documents = result.scalars().all()
+    documents = result.scalars().unique().all()
 
     return DocumentListResponse(
         documents=[DocumentResponse.model_validate(d) for d in documents],
@@ -161,9 +182,10 @@ async def update_document(
     await db.commit()
     await db.refresh(doc)
 
-    # Fire on_save triggers for workflows
-    from app.services.workflow_trigger import fire_triggers
-    await fire_triggers("on_save", current_user.id, background_tasks)
+    # Fire on_save triggers only when content actually changed (not title-only edits)
+    if "content_json" in update_data:
+        from app.services.workflow_trigger import fire_triggers
+        await fire_triggers("on_save", current_user.id, background_tasks)
 
     return DocumentResponse.model_validate(doc)
 

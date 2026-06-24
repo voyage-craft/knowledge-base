@@ -3,6 +3,7 @@
 import { memo, useMemo, useState } from "react"
 import { type EdgeProps, getBezierPath, EdgeLabelRenderer } from "@xyflow/react"
 import { X } from "lucide-react"
+import { useWorkflowEditorContext } from "@/components/workflows/WorkflowEditor"
 
 export const DeletableEdge = memo(function DeletableEdge({
   id,
@@ -18,6 +19,7 @@ export const DeletableEdge = memo(function DeletableEdge({
   label,
 }: EdgeProps) {
   const [hovered, setHovered] = useState(false)
+  const { onDeleteEdge } = useWorkflowEditorContext()
 
   const [edgePath, labelX, labelY] = useMemo(() => getBezierPath({
     sourceX,
@@ -30,9 +32,7 @@ export const DeletableEdge = memo(function DeletableEdge({
 
   const onDelete = (e: React.MouseEvent) => {
     e.stopPropagation()
-    // Dispatch custom event for the parent to handle deletion
-    // (so we can show confirmation if desired)
-    window.dispatchEvent(new CustomEvent("edge-delete-request", { detail: { edgeId: id } }))
+    onDeleteEdge(id)
   }
 
   const showDeleteBtn = selected || hovered

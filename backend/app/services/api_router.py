@@ -1,23 +1,73 @@
 """API Router - Smart dispatch with failover and health tracking."""
 
 import asyncio
+import os
 import time
 import logging
+import ipaddress
+from urllib.parse import urlparse
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Optional
 
 from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
 from app.models.api_endpoint import ApiEndpoint, ApiRoutingRule
+from app.services.llm_service import LLMProviderError
 
 logger = logging.getLogger(__name__)
+
+# Maximum number of cached API clients before LRU eviction
+MAX_CLIENT_CACHE_SIZE = 50
+
+
+def validate_base_url(url: Optional[str]) -> Optional[str]:
+    """Validate a user-configured LLM base_url to prevent SSRF.
+
+    Rejects non-http(s) schemes and disallows link-local / private addresses
+    unless explicitly allow-listed in SSRF_ALLOWED_HOSTS. Loopback is allowed
+    by default so local LLMs (Ollama on 127.0.0.1:11434) keep working.
+    Returns the safe URL or raises ValueError.
+    """
+    if not url:
+        return url
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Disallowed URL scheme: {parsed.scheme!r}")
+
+    host = parsed.hostname or ""
+    if not host:
+        raise ValueError("URL has no host")
+
+    allow_env = os.environ.get("SSRF_ALLOWED_HOSTS", "")
+    allowed = {h.strip().lower() for h in allow_env.split(",") if h.strip()}
+
+    # Allow explicit allow-list (e.g. extra internal hosts)
+    if host.lower() in allowed:
+        return url
+
+    # Loopback is allowed by default so local LLMs (Ollama on 127.0.0.1:11434)
+    # keep working. Link-local (169.254.x.x cloud metadata), other private
+    # ranges, and unspecified/reserved IPs remain blocked.
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback:
+            return url
+        if ip.is_link_local or ip.is_private or ip.is_unspecified or ip.is_reserved:
+            raise ValueError(f"Internal/private address not allowed: {host}")
+    except ValueError:
+        # host is a DNS name, not an IP — allow it (common providers)
+        pass
+
+    return url
 
 
 class ApiRouter:
     """Smart API routing with failover, health tracking, and auto-freeze."""
 
-    # Client cache: key = (protocol, base_url, api_key[:8]) -> client instance
-    _client_cache: dict[str, object] = {}
+    # LRU client cache: key = (protocol, base_url, api_key[:8]) -> client instance
+    _client_cache: OrderedDict[str, object] = OrderedDict()
 
     # Freeze durations for progressive backoff
     FREEZE_LEVELS = [
@@ -36,11 +86,26 @@ class ApiRouter:
         return f"{ep.protocol}:{ep.base_url}:{key_prefix}"
 
     def _get_or_create_client(self, ep: ApiEndpoint):
-        """Get a cached client or create a new one."""
+        """Get a cached client or create a new one (LRU eviction at maxsize)."""
         cache_key = self._get_client_key(ep)
         client = self._client_cache.get(cache_key)
         if client is not None:
+            # Move to end (most recently used)
+            self._client_cache.move_to_end(cache_key)
             return client
+
+        # Defense-in-depth SSRF check before opening an outbound connection
+        validate_base_url(ep.base_url)
+
+        # Evict oldest entries if at capacity
+        while len(self._client_cache) >= MAX_CLIENT_CACHE_SIZE:
+            evicted_key, evicted_client = self._client_cache.popitem(last=False)
+            logger.debug("LRU evicted client: %s", evicted_key)
+            # Schedule close in background (don't block)
+            try:
+                asyncio.get_running_loop().create_task(self._safe_close(evicted_client))
+            except RuntimeError:
+                pass  # No event loop, just discard
 
         if ep.protocol == "anthropic":
             from anthropic import AsyncAnthropic
@@ -57,6 +122,14 @@ class ApiRouter:
         self._client_cache[cache_key] = client
         return client
 
+    @staticmethod
+    async def _safe_close(client):
+        """Safely close a client, ignoring errors."""
+        try:
+            await client.close()
+        except Exception:
+            pass
+
     async def close_all_clients(self):
         """Close all cached clients (call on shutdown)."""
         for client in self._client_cache.values():
@@ -71,10 +144,7 @@ class ApiRouter:
         cache_key = self._get_client_key(ep)
         client = self._client_cache.pop(cache_key, None)
         if client:
-            try:
-                await client.close()
-            except Exception:
-                pass
+            await self._safe_close(client)
 
     async def resolve(self, model_id: str) -> list[ApiEndpoint]:
         """Resolve available endpoints for a model_id, sorted by health score."""
@@ -163,7 +233,7 @@ class ApiRouter:
         """Non-streaming call with automatic failover."""
         endpoints = await self.resolve(model_id)
         if not endpoints:
-            return f"[无可用端点支持模型: {model_id}]"
+            raise LLMProviderError(f"无可用端点支持模型: {model_id}")
 
         errors = []
         for ep in endpoints:
@@ -176,7 +246,7 @@ class ApiRouter:
                 errors.append(f"{ep.name}: {e}")
                 await self._record_failure(ep.id, str(e))
 
-        return f"[所有端点均失败: {model_id}]\n" + "\n".join(errors)
+        raise LLMProviderError(f"所有端点均失败: {model_id}: " + "; ".join(errors))
 
     async def stream_with_failover(
         self,
@@ -189,8 +259,7 @@ class ApiRouter:
         """Streaming call with automatic failover."""
         endpoints = await self.resolve(model_id)
         if not endpoints:
-            yield f"[无可用端点支持模型: {model_id}]"
-            return
+            raise LLMProviderError(f"无可用端点支持模型: {model_id}")
 
         for ep in endpoints:
             try:
@@ -203,7 +272,7 @@ class ApiRouter:
                 await self._record_failure(ep.id, str(e))
                 continue
 
-        yield "\n\n[所有端点均失败]"
+        raise LLMProviderError(f"所有端点均失败: {model_id}")
 
     async def _call_endpoint(
         self,
@@ -328,9 +397,9 @@ class ApiRouter:
                     if chunk.choices and chunk.choices[0].delta.content:
                         yield chunk.choices[0].delta.content
 
-    async def _record_success(self, endpoint_id: int):
-        """Record a successful request."""
-        async with AsyncSessionLocal() as session:
+    async def _record_success(self, endpoint_id: int, db=None):
+        """Record a successful request. Accepts optional db session for reuse."""
+        async def _do_record(session):
             result = await session.execute(
                 select(ApiEndpoint).where(ApiEndpoint.id == endpoint_id)
             )
@@ -351,22 +420,36 @@ class ApiRouter:
                 ep.status = "healthy"
             await session.commit()
 
-    async def _record_failure(self, endpoint_id: int, error_msg: str):
+        if db is not None:
+            await _do_record(db)
+        else:
+            async with AsyncSessionLocal() as session:
+                await _do_record(session)
+
+    async def _record_failure(self, endpoint_id: int, error_msg: str, db=None):
         """Record a failed request, potentially degrading or freezing.
-        Evicts cached client on auth-related failures to force re-creation with fresh credentials."""
-        # Evict cached client on auth failures (401/403) so next attempt uses fresh API key
+        Evicts cached client on auth-related failures. Accepts optional db session."""
+        # Evict cached client on auth failures (401/403)
         error_lower = error_msg.lower()
         if "401" in error_lower or "403" in error_lower or "unauthorized" in error_lower or "invalid" in error_lower:
-            async with AsyncSessionLocal() as session:
-                result = await session.execute(
+            if db is not None:
+                result = await db.execute(
                     select(ApiEndpoint).where(ApiEndpoint.id == endpoint_id)
                 )
                 ep = result.scalar_one_or_none()
                 if ep:
                     await self._evict_client(ep)
                     logger.info("Evicted cached client for endpoint %s due to auth failure", ep.name)
+            else:
+                async with AsyncSessionLocal() as session:
+                    result = await session.execute(
+                        select(ApiEndpoint).where(ApiEndpoint.id == endpoint_id)
+                    )
+                    ep = result.scalar_one_or_none()
+                    if ep:
+                        await self._evict_client(ep)
 
-        async with AsyncSessionLocal() as session:
+        async def _do_record(session):
             result = await session.execute(
                 select(ApiEndpoint).where(ApiEndpoint.id == endpoint_id)
             )
@@ -386,7 +469,6 @@ class ApiRouter:
 
             if consec >= self.CONSECUTIVE_ERROR_FREEZE:
                 ep.status = "frozen"
-                # Progressive freeze duration
                 level = min(consec // self.CONSECUTIVE_ERROR_FREEZE - 1, len(self.FREEZE_LEVELS) - 1)
                 ep.frozen_until = datetime.now(timezone.utc) + self.FREEZE_LEVELS[level]
                 logger.warning("Endpoint %s frozen for %s (consecutive errors: %d)",
@@ -395,6 +477,12 @@ class ApiRouter:
                 ep.status = "degraded"
 
             await session.commit()
+
+        if db is not None:
+            await _do_record(db)
+        else:
+            async with AsyncSessionLocal() as session:
+                await _do_record(session)
 
     async def test_endpoint(self, ep: ApiEndpoint, model: str = "", protocol_mode: str = "completions") -> dict:
         """Test an endpoint's connectivity and latency."""

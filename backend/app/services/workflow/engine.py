@@ -6,7 +6,8 @@ Enhanced workflow engine with:
 - DAG execution with parallel branches
 - Per-node execution tracking
 - Error recovery and retry
-- Parallel document processing
+- Parallel document processing (semaphore-limited)
+- Global execution timeout (5 minutes)
 
 Usage:
     from app.services.workflow.engine import workflow_engine_v2
@@ -22,7 +23,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
-from app.core.database import get_session
+from app.core.database import get_session, AsyncSessionLocal
 from app.models.document import Document
 from app.models.workflow import WorkflowRun, WorkflowNodeExecution
 from app.services.workflow.node_registry import NodeProcessorRegistry, NodeContext, NodeResult
@@ -32,22 +33,32 @@ import app.services.workflow.nodes
 
 logger = logging.getLogger(__name__)
 
+# Maximum concurrent document processing
+DOC_CONCURRENCY = 3
+# Global execution timeout in seconds
+EXECUTION_TIMEOUT = 300  # 5 minutes
+
 
 class WorkflowEngineV2:
     """Enhanced workflow execution engine with node registry pattern."""
 
     def __init__(self):
         self._max_steps = 1000  # Safety limit for graph walking
+        self._semaphore = asyncio.Semaphore(DOC_CONCURRENCY)
 
     async def execute(self, run_id: int, workflow_id: int, user_id: int, config_json: dict):
-        """Execute a workflow run in the background.
+        """Execute a workflow run in the background with timeout protection."""
+        try:
+            await asyncio.wait_for(
+                self._execute_inner(run_id, workflow_id, user_id, config_json),
+                timeout=EXECUTION_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error("Workflow run %d timed out after %ds", run_id, EXECUTION_TIMEOUT)
+            await self._update_run(run_id, status="failed", error_message=f"执行超时（{EXECUTION_TIMEOUT}s）")
 
-        Args:
-            run_id: WorkflowRun ID
-            workflow_id: Workflow ID
-            user_id: User ID
-            config_json: Workflow configuration with nodes and edges
-        """
+    async def _execute_inner(self, run_id: int, workflow_id: int, user_id: int, config_json: dict):
+        """Inner execution logic (wrapped by timeout)."""
         nodes: list[dict] = config_json.get("nodes", [])
         edges: list[dict] = config_json.get("edges", [])
 
@@ -109,22 +120,13 @@ class WorkflowEngineV2:
                     return
 
                 total = len(documents)
-                processed = 0
-                results: list[dict] = []
 
-                # Phase 2: Process each document through the pipeline
-                for doc in documents:
-                    doc_result = await self._process_document(
-                        db, run_id, user_id, doc, node_map, edges, start_node_id
-                    )
-                    results.append(doc_result)
-                    processed += 1
+                # Phase 2: Process documents in parallel (semaphore-limited)
+                results = await self._process_documents_parallel(
+                    db, run_id, user_id, documents, node_map, edges, start_node_id
+                )
 
-                    # Update progress
-                    run = await db.get(WorkflowRun, run_id)
-                    if run:
-                        run.processed_docs = processed
-                        await db.commit()
+                processed = sum(1 for r in results if r.get("status") != "error")
 
                 # Finalize
                 await db.commit()
@@ -138,7 +140,49 @@ class WorkflowEngineV2:
 
             except Exception as e:
                 logger.error("Workflow execution failed for run %d: %s", run_id, e, exc_info=True)
+                # Persist any pending node execution records before updating run status.
+                # _update_run opens its own session, so uncommitted records on this
+                # session would be lost when it closes.
+                try:
+                    await db.commit()
+                except Exception:
+                    logger.warning("Failed to commit node execution records for run %d", run_id)
                 await self._update_run(run_id, status="failed", error_message=str(e))
+
+    async def _process_documents_parallel(
+        self,
+        db,
+        run_id: int,
+        user_id: int,
+        documents: list[dict],
+        node_map: dict,
+        edges: list[dict],
+        start_node_id: str,
+    ) -> list[dict]:
+        """Process documents in parallel with semaphore-limited concurrency."""
+        processed_count = 0
+
+        async def process_one(doc: dict) -> dict:
+            nonlocal processed_count
+            async with self._semaphore:
+                # Each parallel task gets its own database session to avoid
+                # concurrent access on a shared AsyncSession (not thread-safe).
+                async with AsyncSessionLocal() as session:
+                    result = await self._process_document(
+                        session, run_id, user_id, doc, node_map, edges, start_node_id
+                    )
+                    processed_count += 1
+
+                    # Update progress using the per-task session
+                    run = await session.get(WorkflowRun, run_id)
+                    if run:
+                        run.processed_docs = processed_count
+                        await session.commit()
+
+                return result
+
+        tasks = [process_one(doc) for doc in documents]
+        return await asyncio.gather(*tasks, return_exceptions=False)
 
     async def _process_document(
         self,
@@ -190,7 +234,7 @@ class WorkflowEngineV2:
         visited: set,
         step: int = 0,
     ) -> str:
-        """Execute nodes in DAG order, supporting parallel branches.
+        """Execute nodes in DAG order, with parallel execution of independent branches.
 
         Returns the current_text after execution.
         """
@@ -198,110 +242,128 @@ class WorkflowEngineV2:
             logger.warning("Max steps reached in DAG execution")
             return current_text
 
-        # Process nodes in parallel if they have no dependencies
-        for node_id in node_ids:
-            if node_id in visited:
-                continue
+        # Filter out already visited nodes
+        pending_ids = [nid for nid in node_ids if nid not in visited]
+        if not pending_ids:
+            return current_text
 
+        # Separate nodes into processable and skippable
+        processable = []
+        for node_id in pending_ids:
             node = node_map.get(node_id)
             if not node:
                 logger.warning("Node %s not found in node map", node_id)
+                visited.add(node_id)
                 continue
-
             ntype = node.get("type", "")
-
-            # Skip source nodes
             if ntype == "source":
                 visited.add(node_id)
-                # Continue to next nodes
                 next_nodes = adj.get(node_id, [])
                 current_text = await self._execute_dag(
                     db, run_id, user_id, doc, node_map, edges, adj,
                     next_nodes, doc_result, current_text, accumulated_data, visited, step + 1
                 )
                 continue
-
-            # Get processor
             if not NodeProcessorRegistry.has(ntype):
                 logger.warning("Unknown node type: %s", ntype)
                 visited.add(node_id)
                 continue
+            processable.append(node_id)
 
+        if not processable:
+            return current_text
+
+        # Execute independent siblings in parallel
+        async def execute_node(node_id: str) -> tuple[str, str]:
+            """Execute a single node, returns (node_id, resulting_text).
+
+            Each node gets its own AsyncSession to avoid concurrent access
+            on a shared session during parallel (asyncio.gather) execution.
+            """
+            node = node_map[node_id]
+            ntype = node.get("type", "")
             processor = NodeProcessorRegistry.get(ntype)
 
-            # Create context with node_map in extra
-            context = NodeContext(
-                node=node,
-                document=doc,
-                current_text=current_text,
-                accumulated_data=accumulated_data,
-                db=db,
-                user_id=user_id,
-                run_id=run_id,
-                extra={"node_map": node_map, "edges": edges},
-            )
-
-            # Execute node
-            try:
-                result = await processor().execute(context)
-                visited.add(node_id)
-
-                # Record execution
-                await self._record_node_execution(
-                    db, run_id, node, doc["id"], result, current_text
-                )
-
-                # Handle result
-                if result.error:
-                    doc_result["actions"].append(f"{ntype}(失败: {result.error})")
-                    if node.get("config", {}).get("stop_on_error", False):
-                        break
-                else:
-                    doc_result["actions"].extend(result.actions)
-
-                    # Update text if modified
-                    if result.output_text is not None:
-                        current_text = result.output_text
-
-                    # Store metadata
-                    if result.metadata:
-                        doc_result.update(result.metadata)
-
-                # Handle branch target (for condition nodes)
-                if result.branch_target:
-                    # Follow the branch target
-                    next_nodes = [result.branch_target]
-                    current_text = await self._execute_dag(
-                        db, run_id, user_id, doc, node_map, edges, adj,
-                        next_nodes, doc_result, current_text, accumulated_data, visited, step + 1
+            visited.add(node_id)
+            async with AsyncSessionLocal() as session:
+                try:
+                    context = NodeContext(
+                        node=node,
+                        document=doc,
+                        current_text=current_text,
+                        accumulated_data=accumulated_data,
+                        db=session,
+                        user_id=user_id,
+                        run_id=run_id,
+                        extra={"node_map": node_map, "edges": edges},
                     )
-                elif result.should_continue:
-                    # Continue to next nodes in DAG
-                    next_nodes = adj.get(node_id, [])
-                    if next_nodes:
-                        current_text = await self._execute_dag(
-                            db, run_id, user_id, doc, node_map, edges, adj,
-                            next_nodes, doc_result, current_text, accumulated_data, visited, step + 1
+
+                    result = await processor().execute(context)
+
+                    await self._record_node_execution(
+                        session, run_id, node, doc["id"], result, current_text
+                    )
+
+                    if result.error:
+                        doc_result["actions"].append(f"{ntype}(失败: {result.error})")
+                        if node.get("config", {}).get("stop_on_error", False):
+                            return node_id, current_text
+                    else:
+                        doc_result["actions"].extend(result.actions)
+                        if result.metadata:
+                            doc_result.update(result.metadata)
+
+                    out_text = result.output_text if result.output_text is not None else current_text
+
+                    # Handle branch target (for condition nodes)
+                    if result.branch_target:
+                        next_nodes = [result.branch_target]
+                        out_text = await self._execute_dag(
+                            session, run_id, user_id, doc, node_map, edges, adj,
+                            next_nodes, doc_result, out_text, accumulated_data, visited, step + 1
                         )
+                    elif result.should_continue:
+                        next_nodes = adj.get(node_id, [])
+                        if next_nodes:
+                            out_text = await self._execute_dag(
+                                session, run_id, user_id, doc, node_map, edges, adj,
+                                next_nodes, doc_result, out_text, accumulated_data, visited, step + 1
+                            )
 
-            except Exception as e:
-                logger.error("Node %s failed for doc %d: %s", ntype, doc["id"], e, exc_info=True)
-                doc_result["actions"].append(f"{ntype}(异常)")
-                visited.add(node_id)
+                    return node_id, out_text
 
-                # Record failed execution
-                await self._record_node_execution(
-                    db, run_id, node, doc["id"],
-                    NodeResult(error=str(e)), current_text
-                )
+                except Exception as e:
+                    logger.error("Node %s failed for doc %d: %s", ntype, doc["id"], e, exc_info=True)
+                    doc_result["actions"].append(f"{ntype}(异常)")
 
-                # Continue to next nodes even on error
-                next_nodes = adj.get(node_id, [])
-                if next_nodes:
-                    current_text = await self._execute_dag(
-                        db, run_id, user_id, doc, node_map, edges, adj,
-                        next_nodes, doc_result, current_text, accumulated_data, visited, step + 1
+                    await self._record_node_execution(
+                        session, run_id, node, doc["id"],
+                        NodeResult(error=str(e)), current_text
                     )
+
+                    next_nodes = adj.get(node_id, [])
+                    out_text = current_text
+                    if next_nodes:
+                        out_text = await self._execute_dag(
+                            session, run_id, user_id, doc, node_map, edges, adj,
+                            next_nodes, doc_result, out_text, accumulated_data, visited, step + 1
+                        )
+                    return node_id, out_text
+                finally:
+                    await session.commit()
+
+        # Run all processable nodes in parallel
+        if len(processable) > 1:
+            results = await asyncio.gather(
+                *[execute_node(nid) for nid in processable],
+                return_exceptions=False,
+            )
+            # Use the last non-empty text result
+            for _, text in results:
+                if text != current_text:
+                    current_text = text
+        else:
+            _, current_text = await execute_node(processable[0])
 
         return current_text
 

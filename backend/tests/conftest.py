@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 # This ensures tests never touch the production database
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./data/test_knowledge.db"
 os.environ["ADMIN_INITIAL_PASSWORD"] = "test-admin-password-123"
+os.environ["INTERNAL_API_SECRET"] = "test-internal-secret-for-testing"
 
 from app.main import app
 from app.core.database import Base

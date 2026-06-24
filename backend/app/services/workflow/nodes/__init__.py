@@ -22,6 +22,9 @@ from app.services.workflow.nodes.format_convert import FormatConvertProcessor
 from app.services.workflow.nodes.ai_analyze import AIAnalyzeProcessor
 from app.services.workflow.nodes.loop import LoopProcessor
 from app.services.workflow.nodes.approval import ApprovalProcessor
+from app.services.workflow.nodes.rename import RenameProcessor
+from app.services.workflow.nodes.set_metadata import SetMetadataProcessor
+from app.services.workflow.nodes.embedding import EmbeddingProcessor
 
 __all__ = [
     "SourceProcessor",
@@ -31,4 +34,5 @@ __all__ = [
     "AutoTagProcessor", "CustomPromptProcessor", "SaveProcessor",
     "ExportProcessor", "ConditionProcessor", "FormatConvertProcessor",
     "AIAnalyzeProcessor", "LoopProcessor", "ApprovalProcessor",
+    "RenameProcessor", "SetMetadataProcessor", "EmbeddingProcessor",
 ]

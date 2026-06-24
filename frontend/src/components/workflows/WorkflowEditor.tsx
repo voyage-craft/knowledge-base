@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
 import {
   ReactFlow,
   Background,
@@ -26,7 +26,7 @@ import {
   FolderOpen, Sparkles, Expand, Minimize2, Languages, Wrench,
   FileText, Key, Tags, ClipboardCheck, MessageSquare, Save,
   Trash2, Settings2, Search, LayoutList, GripVertical,
-  Plus, ArrowLeft, PanelRightClose, PanelRightOpen,
+  Plus, ArrowLeft, PanelRightClose, PanelRightOpen, Undo2, Redo2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -41,6 +41,19 @@ import {
   buildPaneMenuItems,
 } from "@/components/workflows/CanvasContextMenu"
 import { WORKFLOW_MODULES, getModuleByType, MODULE_CATEGORIES, type WorkflowModule } from "@/lib/workflow-modules"
+
+// ── Unique ID generation (replaces global counter) ──
+let _idCounter = 0
+function nextId(): string {
+  return `node_${Date.now().toString(36)}_${(++_idCounter).toString(36)}`
+}
+
+// ── Workflow Editor Context (replaces CustomEvent for edge deletion) ──
+interface WorkflowEditorContextValue {
+  onDeleteEdge: (edgeId: string) => void
+}
+const WorkflowEditorContext = createContext<WorkflowEditorContextValue>({ onDeleteEdge: () => {} })
+export function useWorkflowEditorContext() { return useContext(WorkflowEditorContext) }
 
 // ── Icon map ──
 const ICONS: Record<string, typeof Sparkles> = {
@@ -104,15 +117,20 @@ const WorkflowNode = memo(function WorkflowNode({ data, selected }: { data: { la
 const nodeTypes: NodeTypes = { workflow: WorkflowNode }
 const edgeTypes: EdgeTypes = { deletable: DeletableEdge }
 
+// ── Undo/Redo history types ──
+interface HistorySnapshot {
+  nodes: Node[]
+  edges: Edge[]
+}
+
+const MAX_HISTORY = 50
+
 // ── Props ──
 interface WorkflowEditorProps {
   initialNodes?: Node[]
   initialEdges?: Edge[]
   onGraphChange?: (nodes: Node[], edges: Edge[]) => void
 }
-
-let _nodeId = 100
-function nextId() { return `node_${++_nodeId}` }
 
 // ── Inner editor (needs ReactFlow context) ──
 function EditorInner({
@@ -134,13 +152,77 @@ function EditorInner({
   const confirmDeleteRef = useRef(confirmDelete)
   confirmDeleteRef.current = confirmDelete
   const graphRef = useRef({ nodes, edges })
+
   // Keep a ref to current nodes/edges for use in callbacks without creating dependencies
   const nodesRef = useRef(nodes)
   const edgesRef = useRef(edges)
   nodesRef.current = nodes
   edgesRef.current = edges
-  // Ref for delete edge handler to avoid circular dependency with useEffect
-  const handleDeleteEdgeRef = useRef<((edgeId: string) => void) | null>(null)
+
+  // ── Undo/Redo history ──
+  const historyRef = useRef<{
+    past: HistorySnapshot[]
+    future: HistorySnapshot[]
+    isRestoring: boolean
+  }>({ past: [], future: [], isRestoring: false })
+
+  const pushHistory = useCallback(() => {
+    if (historyRef.current.isRestoring) return
+    const { past } = historyRef.current
+    past.push({ nodes: nodesRef.current, edges: edgesRef.current })
+    if (past.length > MAX_HISTORY) past.shift()
+    historyRef.current.future = []
+  }, [])
+
+  const [canUndo, setCanUndo] = useState(false)
+  const [canRedo, setCanRedo] = useState(false)
+
+  const updateUndoRedoState = useCallback(() => {
+    setCanUndo(historyRef.current.past.length > 0)
+    setCanRedo(historyRef.current.future.length > 0)
+  }, [])
+
+  const undo = useCallback(() => {
+    const { past, future } = historyRef.current
+    if (past.length === 0) return
+    historyRef.current.isRestoring = true
+    const snapshot = past.pop()!
+    future.push({ nodes: nodesRef.current, edges: edgesRef.current })
+    setNodes(snapshot.nodes)
+    setEdges(snapshot.edges)
+    historyRef.current.isRestoring = false
+    updateUndoRedoState()
+  }, [setNodes, setEdges, updateUndoRedoState])
+
+  const redo = useCallback(() => {
+    const { past, future } = historyRef.current
+    if (future.length === 0) return
+    historyRef.current.isRestoring = true
+    const snapshot = future.pop()!
+    past.push({ nodes: nodesRef.current, edges: edgesRef.current })
+    setNodes(snapshot.nodes)
+    setEdges(snapshot.edges)
+    historyRef.current.isRestoring = false
+    updateUndoRedoState()
+  }, [setNodes, setEdges, updateUndoRedoState])
+
+  // Keyboard shortcuts for undo/redo
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Only respond if we're not in an input/textarea
+      const target = e.target as HTMLElement
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === "z") {
+        e.preventDefault()
+        undo()
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.shiftKey && e.key === "Z"))) {
+        e.preventDefault()
+        redo()
+      }
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [undo, redo])
 
   // Auto-open right panel when a node is selected
   useEffect(() => {
@@ -162,29 +244,23 @@ function EditorInner({
     onGraphChange?.(nodes, edges)
   }, [nodes, edges, onGraphChange])
 
-  // Listen for edge delete requests from DeletableEdge
-  // Uses ref to avoid circular dependency — handleDeleteEdge is defined below
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const { edgeId } = (e as CustomEvent).detail
-      handleDeleteEdgeRef.current?.(edgeId)
-    }
-    window.addEventListener("edge-delete-request", handler)
-    return () => window.removeEventListener("edge-delete-request", handler)
-  }, [])
-
   // ── Connect handler: create deletable edges ──
   const handleConnect: OnConnect = useCallback((params) => {
+    pushHistory()
     setEdges((eds) => addEdge({
       ...params,
       type: "deletable",
       animated: true,
       style: { stroke: "#94a3b8", strokeWidth: 2 },
     }, eds))
-  }, [setEdges])
+    updateUndoRedoState()
+  }, [setEdges, pushHistory, updateUndoRedoState])
 
   // ── Node change handler with selection tracking ──
   const handleNodesChange: OnNodesChange = useCallback((changes) => {
+    // Only push history on significant changes (remove, not select/drag)
+    const hasRemoval = changes.some(c => c.type === "remove")
+    if (hasRemoval) pushHistory()
     onNodesChange(changes)
     for (const change of changes) {
       if (change.type === "select") {
@@ -195,14 +271,19 @@ function EditorInner({
         }
       }
     }
-  }, [onNodesChange])
+    if (hasRemoval) updateUndoRedoState()
+  }, [onNodesChange, pushHistory, updateUndoRedoState])
 
   const handleEdgesChange: OnEdgesChange = useCallback((changes) => {
+    const hasRemoval = changes.some(c => c.type === "remove")
+    if (hasRemoval) pushHistory()
     onEdgesChange(changes)
-  }, [onEdgesChange])
+    if (hasRemoval) updateUndoRedoState()
+  }, [onEdgesChange, pushHistory, updateUndoRedoState])
 
   // ── Add module node (with optional position for drag-drop) ──
   const addModuleNode = useCallback((mod: WorkflowModule, position?: { x: number; y: number }) => {
+    pushHistory()
     const id = nextId()
     const currentNodes = nodesRef.current
     const pos = position || { x: 250 + Math.random() * 100, y: 80 + currentNodes.length * 130 }
@@ -240,6 +321,7 @@ function EditorInner({
 
     // Select the new node
     setSelectedNodeId(id)
+    updateUndoRedoState()
 
     // Auto-scroll to new node if added via click (not drag)
     if (!position) {
@@ -247,13 +329,12 @@ function EditorInner({
         setCenter(pos.x + 85, pos.y + 40, { zoom: 1, duration: 300 })
       }, 50)
     }
-  }, [setNodes, setEdges, setCenter])
+  }, [setNodes, setEdges, setCenter, pushHistory, updateUndoRedoState])
 
   // ── Drag-and-drop handlers ──
   const onDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     e.dataTransfer.dropEffect = "move"
-    // Only update state if not already in drag-over state to avoid re-renders on every mousemove
     setIsDragOver(prev => prev ? prev : true)
   }, [])
 
@@ -283,48 +364,56 @@ function EditorInner({
   const handleDeleteNode = useCallback((nodeId: string) => {
     const current = confirmDeleteRef.current
     if (current?.type === "node" && current.id === nodeId) {
-      // Second click = confirmed
+      pushHistory()
       setNodes((nds) => nds.filter(n => n.id !== nodeId))
       setEdges((eds) => eds.filter(e => e.source !== nodeId && e.target !== nodeId))
       setSelectedNodeId(prev => prev === nodeId ? null : prev)
       setConfirmDelete(null)
+      updateUndoRedoState()
     } else {
       setConfirmDelete({ type: "node", id: nodeId })
-      // Auto-clear after 3s
       setTimeout(() => setConfirmDelete(prev => prev?.id === nodeId ? null : prev), 3000)
     }
-  }, [setNodes, setEdges])
+  }, [setNodes, setEdges, pushHistory, updateUndoRedoState])
 
   const handleDeleteEdge = useCallback((edgeId: string) => {
-    // Read confirmDelete from ref to avoid stale closure
     const current = confirmDeleteRef.current
     if (current?.type === "edge" && current.id === edgeId) {
+      pushHistory()
       setEdges((eds) => eds.filter(e => e.id !== edgeId))
       setConfirmDelete(null)
+      updateUndoRedoState()
     } else {
       setConfirmDelete({ type: "edge", id: edgeId })
       setTimeout(() => setConfirmDelete(prev => prev?.id === edgeId ? null : prev), 3000)
     }
-  }, [setEdges])
-  // Keep ref in sync with the latest callback
-  handleDeleteEdgeRef.current = handleDeleteEdge
+  }, [setEdges, pushHistory, updateUndoRedoState])
+
+  // Context value for DeletableEdge (memoised to prevent unnecessary re-renders)
+  const editorContextValue = useMemo<WorkflowEditorContextValue>(
+    () => ({ onDeleteEdge: handleDeleteEdge }),
+    [handleDeleteEdge],
+  )
 
   // ── Delete selected nodes ──
   const deleteSelectedNodes = useCallback(() => {
     setNodes((nds) => {
       const selected = nds.filter(n => n.selected)
       if (selected.length === 0) return nds
+      pushHistory()
       const selectedIds = new Set(selected.map(n => n.id))
       setEdges((eds) => eds.filter(e => !selectedIds.has(e.source) && !selectedIds.has(e.target)))
       setSelectedNodeId(null)
+      updateUndoRedoState()
       return nds.filter(n => !n.selected)
     })
-  }, [setNodes, setEdges])
+  }, [setNodes, setEdges, pushHistory, updateUndoRedoState])
 
-  // ── Duplicate node (with deep copy fix) ──
+  // ── Duplicate node ──
   const duplicateNode = useCallback((nodeId: string) => {
     const original = nodesRef.current.find(n => n.id === nodeId)
     if (!original) return
+    pushHistory()
     const id = nextId()
     const originalData = original.data as Record<string, unknown>
     const newNode: Node = {
@@ -338,11 +427,13 @@ function EditorInner({
       },
     }
     setNodes((nds) => [...nds, newNode])
-  }, [setNodes])
+    updateUndoRedoState()
+  }, [setNodes, pushHistory, updateUndoRedoState])
 
   // ── Auto-layout: simple vertical arrangement ──
   const autoLayout = useCallback(() => {
     const currentEdges = edgesRef.current
+    pushHistory()
     setNodes((nds) => {
       const nodeMap = new Map(nds.map(n => [n.id, n]))
       const inDegree = new Map<string, number>()
@@ -373,11 +464,11 @@ function EditorInner({
         position: { x: centerX, y: i * 160 + 50 },
       }))
     })
-
+    updateUndoRedoState()
     setTimeout(() => fitView({ duration: 400, padding: 0.2 }), 50)
-  }, [setNodes, fitView])
+  }, [setNodes, fitView, pushHistory, updateUndoRedoState])
 
-  // ── Node update from config panel (debounced by panel component) ──
+  // ── Node update from config panel ──
   const handleNodeUpdate = useCallback((nodeId: string, newData: Record<string, unknown>) => {
     setNodes(nds => nds.map(n => n.id === nodeId ? { ...n, data: newData } : n))
   }, [setNodes])
@@ -404,7 +495,7 @@ function EditorInner({
 
   const closeContextMenu = useCallback(() => setContextMenu(null), [])
 
-  // Build context menu items (use nodesRef to avoid re-computing during drag when contextMenu is null)
+  // Build context menu items
   const contextMenuItems = useMemo<ContextMenuItem[]>(() => {
     if (!contextMenu) return []
     if (contextMenu.type === "node" && contextMenu.targetId) {
@@ -437,243 +528,262 @@ function EditorInner({
 
   const selectedNode = nodes.find(n => n.id === selectedNodeId) || null
 
-  // Close right panel when no node selected
   const closeRightPanel = useCallback(() => {
     setRightPanelOpen(false)
     setSelectedNodeId(null)
   }, [])
 
   return (
-    <div className="flex h-full">
-      {/* ── Module Palette (Left Sidebar) ── */}
-      <div
-        data-onboarding="module-panel"
-        className="w-60 border-r bg-slate-50 dark:bg-slate-950 overflow-hidden shrink-0 flex flex-col"
-      >
-        {/* Search */}
-        <div className="p-3 pb-2">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-            <Input
-              placeholder="搜索模块..."
-              value={moduleSearch}
-              onChange={e => setModuleSearch(e.target.value)}
-              className="h-8 pl-8 text-xs"
-            />
-          </div>
-        </div>
-
-        {/* Module list */}
-        <div className="flex-1 overflow-y-auto px-2 pb-2">
-          {MODULE_CATEGORIES.map(cat => {
-            const mods = filteredModules.filter(m => m.category === cat.key)
-            if (mods.length === 0) return null
-            return (
-              <div key={cat.key} className="mb-3">
-                <p className="text-[10px] font-semibold text-muted-foreground/70 mb-1.5 px-1 uppercase tracking-wider">
-                  {cat.label}
-                </p>
-                <div className="space-y-0.5">
-                  {mods.map(mod => (
-                    <button
-                      key={mod.type}
-                      draggable
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData("application/reactflow", JSON.stringify(mod))
-                        e.dataTransfer.effectAllowed = "move"
-                      }}
-                      onClick={() => addModuleNode(mod)}
-                      className="flex items-center gap-2 w-full p-2 rounded-lg text-left hover:bg-white dark:hover:bg-slate-800 transition-all duration-150 border border-transparent hover:border-slate-200 dark:hover:border-slate-700 hover:shadow-sm cursor-grab active:cursor-grabbing group relative"
-                      title={`拖拽到画布或点击添加: ${mod.label}`}
-                    >
-                      {/* Colored left strip */}
-                      <div className={`absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full ${mod.color} opacity-40 group-hover:opacity-80 transition-opacity`} />
-                      <GripVertical className="h-3 w-3 text-muted-foreground/30 group-hover:text-muted-foreground/60 shrink-0 transition-colors ml-1" />
-                      <div className={`p-1.5 rounded-md shrink-0 ${mod.color}`}>
-                        {(() => { const I = ICONS[mod.icon] || Sparkles; return <I className="h-3 w-3 text-white" /> })()}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <span className="truncate block text-xs font-medium">{mod.label}</span>
-                        <span className="truncate block text-[10px] text-muted-foreground/80">{mod.description}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )
-          })}
-          {filteredModules.length === 0 && (
-            <div className="text-center py-8">
-              <Search className="h-5 w-5 mx-auto mb-2 text-muted-foreground/30" />
-              <p className="text-xs text-muted-foreground">未找到匹配模块</p>
-            </div>
-          )}
-        </div>
-
-        {/* Stats bar */}
-        <div className="px-3 py-2 border-t bg-slate-100/50 dark:bg-slate-900/50">
-          <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-            <span>画布 {nodes.length} 个节点 · {edges.length} 条连线</span>
-          </div>
-          <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground/70">
-            <span>拖拽放置</span>
-            <span>·</span>
-            <span>右键操作</span>
-            <span>·</span>
-            <span>Delete 删除</span>
-          </div>
-        </div>
-      </div>
-
-      {/* ── ReactFlow Canvas ── */}
-      <div
-        ref={reactFlowWrapper}
-        data-onboarding="canvas"
-        className={`flex-1 relative transition-all duration-200 ${
-          isDragOver ? "ring-2 ring-inset ring-blue-400/50" : ""
-        }`}
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
-      >
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={handleNodesChange}
-          onEdgesChange={handleEdgesChange}
-          onConnect={handleConnect}
-          nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
-          fitView
-          className="bg-slate-50 dark:bg-slate-950"
-          onPaneClick={() => { setSelectedNodeId(null); setContextMenu(null); setConfirmDelete(null) }}
-          onNodeContextMenu={onNodeContextMenu}
-          onEdgeContextMenu={onEdgeContextMenu}
-          onPaneContextMenu={onPaneContextMenu}
-          deleteKeyCode={["Backspace", "Delete"]}
-          multiSelectionKeyCode="Shift"
-          snapToGrid
-          snapGrid={[15, 15]}
-          nodeDragThreshold={2}
-          proOptions={{ hideAttribution: false }}
+    <WorkflowEditorContext.Provider value={editorContextValue}>
+      <div className="flex h-full">
+        {/* ── Module Palette (Left Sidebar) ── */}
+        <div
+          data-onboarding="module-panel"
+          className="w-60 border-r bg-slate-50 dark:bg-slate-950 overflow-hidden shrink-0 flex flex-col"
         >
-          <Background gap={15} size={1} color="#e2e8f0" />
-          <Controls showInteractive={false} className="!bg-white !dark:bg-slate-900 !border-slate-200" />
-          <MiniMap
-            className="!bg-white dark:!bg-slate-900 !border-slate-200 dark:!border-slate-700"
-            maskColor="rgba(0,0,0,0.06)"
-            nodeColor={miniMapNodeColor}
-          />
+          {/* Search */}
+          <div className="p-3 pb-2">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                placeholder="搜索模块..."
+                value={moduleSearch}
+                onChange={e => setModuleSearch(e.target.value)}
+                className="h-8 pl-8 text-xs"
+              />
+            </div>
+          </div>
 
-          {/* Toolbar */}
-          <Panel position="top-right" className="flex gap-1.5" data-onboarding="toolbar">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={autoLayout}
-              className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm h-7 text-xs"
-              title="自动排列所有节点"
-            >
-              <LayoutList className="h-3 w-3 mr-1" /> 自动排列
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={deleteSelectedNodes}
-              className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm h-7 text-xs"
-              title="删除选中的节点"
-            >
-              <Trash2 className="h-3 w-3 mr-1" /> 删除选中
-            </Button>
-            {/* Toggle right panel */}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setRightPanelOpen(!rightPanelOpen)}
-              className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm h-7 w-7 p-0"
-              title={rightPanelOpen ? "关闭配置面板" : "打开配置面板"}
-            >
-              {rightPanelOpen ? <PanelRightClose className="h-3 w-3" /> : <PanelRightOpen className="h-3 w-3" />}
-            </Button>
-          </Panel>
-
-          {/* Empty canvas state */}
-          {nodes.length === 0 && (
-            <Panel position="top-center">
-              <div className="mt-20 text-center pointer-events-none">
-                <div className="inline-flex flex-col items-center gap-3 p-8 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
-                  <div className="p-3 rounded-full bg-blue-50 dark:bg-blue-950">
-                    <Plus className="h-8 w-8 text-blue-400" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
-                      从左侧拖拽模块到这里
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      开始构建你的工作流 · 也可以点击模块快速添加
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 text-[10px] text-muted-foreground/60 mt-1">
-                    <ArrowLeft className="h-3 w-3" />
-                    <span>← 左侧模块面板</span>
+          {/* Module list */}
+          <div className="flex-1 overflow-y-auto px-2 pb-2">
+            {MODULE_CATEGORIES.map(cat => {
+              const mods = filteredModules.filter(m => m.category === cat.key)
+              if (mods.length === 0) return null
+              return (
+                <div key={cat.key} className="mb-3">
+                  <p className="text-[10px] font-semibold text-muted-foreground/70 mb-1.5 px-1 uppercase tracking-wider">
+                    {cat.label}
+                  </p>
+                  <div className="space-y-0.5">
+                    {mods.map(mod => (
+                      <button
+                        key={mod.type}
+                        draggable
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData("application/reactflow", JSON.stringify(mod))
+                          e.dataTransfer.effectAllowed = "move"
+                        }}
+                        onClick={() => addModuleNode(mod)}
+                        className="flex items-center gap-2 w-full p-2 rounded-lg text-left hover:bg-white dark:hover:bg-slate-800 transition-all duration-150 border border-transparent hover:border-slate-200 dark:hover:border-slate-700 hover:shadow-sm cursor-grab active:cursor-grabbing group relative"
+                        title={`拖拽到画布或点击添加: ${mod.label}`}
+                      >
+                        <div className={`absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full ${mod.color} opacity-40 group-hover:opacity-80 transition-opacity`} />
+                        <GripVertical className="h-3 w-3 text-muted-foreground/30 group-hover:text-muted-foreground/60 shrink-0 transition-colors ml-1" />
+                        <div className={`p-1.5 rounded-md shrink-0 ${mod.color}`}>
+                          {(() => { const I = ICONS[mod.icon] || Sparkles; return <I className="h-3 w-3 text-white" /> })()}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <span className="truncate block text-xs font-medium">{mod.label}</span>
+                          <span className="truncate block text-[10px] text-muted-foreground/80">{mod.description}</span>
+                        </div>
+                      </button>
+                    ))}
                   </div>
                 </div>
+              )
+            })}
+            {filteredModules.length === 0 && (
+              <div className="text-center py-8">
+                <Search className="h-5 w-5 mx-auto mb-2 text-muted-foreground/30" />
+                <p className="text-xs text-muted-foreground">未找到匹配模块</p>
               </div>
-            </Panel>
-          )}
+            )}
+          </div>
 
-          {/* Drop zone overlay when dragging */}
-          {isDragOver && (
-            <Panel position="top-center">
-              <div className="mt-4 px-5 py-2.5 bg-blue-500/90 text-white text-sm rounded-xl shadow-lg backdrop-blur-sm flex items-center gap-2">
-                <Plus className="h-4 w-4" />
-                松开鼠标放置模块
-              </div>
-            </Panel>
-          )}
-
-          {/* Delete confirmation toast */}
-          {confirmDelete && (
-            <Panel position="bottom-center">
-              <div className="mb-4 px-4 py-2.5 bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 text-xs rounded-xl shadow-lg flex items-center gap-3 animate-in slide-in-from-bottom-2 duration-200">
-                <Trash2 className="h-3.5 w-3.5 text-red-400 dark:text-red-500" />
-                <span>再次点击确认删除{confirmDelete.type === "node" ? "节点" : "连线"}</span>
-                <button
-                  className="text-[10px] px-2 py-0.5 rounded bg-white/20 dark:bg-black/20 hover:bg-white/30 transition-colors"
-                  onClick={() => setConfirmDelete(null)}
-                >
-                  取消
-                </button>
-              </div>
-            </Panel>
-          )}
-        </ReactFlow>
-      </div>
-
-      {/* ── Right Panel: Node Config (collapsible) ── */}
-      <div
-        className={`border-l bg-white dark:bg-slate-950 overflow-hidden shrink-0 transition-all duration-300 ease-in-out ${
-          rightPanelOpen && selectedNode ? "w-72" : "w-0"
-        }`}
-      >
-        <div className="w-72 h-full p-4 overflow-y-auto">
-          {selectedNode ? (
-            <NodeConfigPanel
-              node={selectedNode}
-              onUpdate={handleNodeUpdate}
-              onClose={closeRightPanel}
-            />
-          ) : null}
+          {/* Stats bar */}
+          <div className="px-3 py-2 border-t bg-slate-100/50 dark:bg-slate-900/50">
+            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+              <span>画布 {nodes.length} 个节点 · {edges.length} 条连线</span>
+            </div>
+            <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground/70">
+              <span>拖拽放置</span>
+              <span>·</span>
+              <span>右键操作</span>
+              <span>·</span>
+              <span>Ctrl+Z 撤销</span>
+            </div>
+          </div>
         </div>
-      </div>
 
-      {/* ── Context Menu ── */}
-      <CanvasContextMenu
-        menu={contextMenu}
-        items={contextMenuItems}
-        onClose={closeContextMenu}
-      />
-    </div>
+        {/* ── ReactFlow Canvas ── */}
+        <div
+          ref={reactFlowWrapper}
+          data-onboarding="canvas"
+          className={`flex-1 relative transition-all duration-200 ${
+            isDragOver ? "ring-2 ring-inset ring-blue-400/50" : ""
+          }`}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+        >
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={handleNodesChange}
+            onEdgesChange={handleEdgesChange}
+            onConnect={handleConnect}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            fitView
+            className="bg-slate-50 dark:bg-slate-950"
+            onPaneClick={() => { setSelectedNodeId(null); setContextMenu(null); setConfirmDelete(null) }}
+            onNodeContextMenu={onNodeContextMenu}
+            onEdgeContextMenu={onEdgeContextMenu}
+            onPaneContextMenu={onPaneContextMenu}
+            deleteKeyCode={["Backspace", "Delete"]}
+            multiSelectionKeyCode="Shift"
+            snapToGrid
+            snapGrid={[15, 15]}
+            nodeDragThreshold={2}
+            proOptions={{ hideAttribution: false }}
+          >
+            <Background gap={15} size={1} color="#e2e8f0" />
+            <Controls showInteractive={false} className="!bg-white !dark:bg-slate-900 !border-slate-200" />
+            <MiniMap
+              className="!bg-white dark:!bg-slate-900 !border-slate-200 dark:!border-slate-700"
+              maskColor="rgba(0,0,0,0.06)"
+              nodeColor={miniMapNodeColor}
+            />
+
+            {/* Toolbar */}
+            <Panel position="top-right" className="flex gap-1.5" data-onboarding="toolbar">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={undo}
+                disabled={!canUndo}
+                className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm h-7 w-7 p-0"
+                title="撤销 (Ctrl+Z)"
+              >
+                <Undo2 className="h-3 w-3" />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={redo}
+                disabled={!canRedo}
+                className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm h-7 w-7 p-0"
+                title="重做 (Ctrl+Y)"
+              >
+                <Redo2 className="h-3 w-3" />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={autoLayout}
+                className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm h-7 text-xs"
+                title="自动排列所有节点"
+              >
+                <LayoutList className="h-3 w-3 mr-1" /> 自动排列
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={deleteSelectedNodes}
+                className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm h-7 text-xs"
+                title="删除选中的节点"
+              >
+                <Trash2 className="h-3 w-3 mr-1" /> 删除选中
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setRightPanelOpen(!rightPanelOpen)}
+                className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm h-7 w-7 p-0"
+                title={rightPanelOpen ? "关闭配置面板" : "打开配置面板"}
+              >
+                {rightPanelOpen ? <PanelRightClose className="h-3 w-3" /> : <PanelRightOpen className="h-3 w-3" />}
+              </Button>
+            </Panel>
+
+            {/* Empty canvas state */}
+            {nodes.length === 0 && (
+              <Panel position="top-center">
+                <div className="mt-20 text-center pointer-events-none">
+                  <div className="inline-flex flex-col items-center gap-3 p-8 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                    <div className="p-3 rounded-full bg-blue-50 dark:bg-blue-950">
+                      <Plus className="h-8 w-8 text-blue-400" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
+                        从左侧拖拽模块到这里
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        开始构建你的工作流 · 也可以点击模块快速添加
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] text-muted-foreground/60 mt-1">
+                      <ArrowLeft className="h-3 w-3" />
+                      <span>← 左侧模块面板</span>
+                    </div>
+                  </div>
+                </div>
+              </Panel>
+            )}
+
+            {/* Drop zone overlay */}
+            {isDragOver && (
+              <Panel position="top-center">
+                <div className="mt-4 px-5 py-2.5 bg-blue-500/90 text-white text-sm rounded-xl shadow-lg backdrop-blur-sm flex items-center gap-2">
+                  <Plus className="h-4 w-4" />
+                  松开鼠标放置模块
+                </div>
+              </Panel>
+            )}
+
+            {/* Delete confirmation toast */}
+            {confirmDelete && (
+              <Panel position="bottom-center">
+                <div className="mb-4 px-4 py-2.5 bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 text-xs rounded-xl shadow-lg flex items-center gap-3 animate-in slide-in-from-bottom-2 duration-200">
+                  <Trash2 className="h-3.5 w-3.5 text-red-400 dark:text-red-500" />
+                  <span>再次点击确认删除{confirmDelete.type === "node" ? "节点" : "连线"}</span>
+                  <button
+                    className="text-[10px] px-2 py-0.5 rounded bg-white/20 dark:bg-black/20 hover:bg-white/30 transition-colors"
+                    onClick={() => setConfirmDelete(null)}
+                  >
+                    取消
+                  </button>
+                </div>
+              </Panel>
+            )}
+          </ReactFlow>
+        </div>
+
+        {/* ── Right Panel: Node Config (collapsible) ── */}
+        <div
+          className={`border-l bg-white dark:bg-slate-950 overflow-hidden shrink-0 transition-all duration-300 ease-in-out ${
+            rightPanelOpen && selectedNode ? "w-72" : "w-0"
+          }`}
+        >
+          <div className="w-72 h-full p-4 overflow-y-auto">
+            {selectedNode ? (
+              <NodeConfigPanel
+                node={selectedNode}
+                onUpdate={handleNodeUpdate}
+                onClose={closeRightPanel}
+              />
+            ) : null}
+          </div>
+        </div>
+
+        {/* ── Context Menu ── */}
+        <CanvasContextMenu
+          menu={contextMenu}
+          items={contextMenuItems}
+          onClose={closeContextMenu}
+        />
+      </div>
+    </WorkflowEditorContext.Provider>
   )
 }
 

@@ -6,20 +6,15 @@ from typing import Optional
 from datetime import datetime, timezone
 
 from sqlalchemy import select, delete
-from app.core.database import AsyncSessionLocal
+from app.core.database import AsyncSessionLocal, get_db
 from app.api.auth import get_current_user_dep
+from app.core.deps import require_admin
 from app.models.user import User
 from app.models.api_endpoint import ApiEndpoint, ApiRoutingRule
 from app.services.api_router import api_router
 from app.services.provider_templates import get_all_templates, get_template
 
 router = APIRouter(prefix="/api/api-routes", tags=["api-routes"])
-
-
-def require_admin(user: User = Depends(get_current_user_dep)) -> User:
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="需要管理员权限")
-    return user
 
 
 # ── Pydantic schemas ──
@@ -59,8 +54,9 @@ class RuleLock(BaseModel):
 
 def endpoint_to_dict(ep: ApiEndpoint, mask_key: bool = True) -> dict:
     api_key = ep.api_key
-    if mask_key and api_key and len(api_key) > 8:
-        api_key = api_key[:4] + "****" + api_key[-4:]
+    if mask_key:
+        # Never return any portion of the key over HTTP; only a presence flag
+        api_key = "set" if api_key else ""
     return {
         "id": ep.id,
         "name": ep.name,
@@ -81,7 +77,21 @@ def endpoint_to_dict(ep: ApiEndpoint, mask_key: bool = True) -> dict:
     }
 
 
-# ── Provider templates ──
+def endpoint_to_public_dict(ep: ApiEndpoint) -> dict:
+    """Minimal, infrastructure-safe representation for non-admin users.
+
+    Excludes base_url, stats, errors, frozen state — only what the UI needs to
+    show which models are available.
+    """
+    return {
+        "id": ep.id,
+        "name": ep.name,
+        "provider": ep.provider,
+        "supported_models": ep.supported_models or [],
+        "is_active": ep.is_active,
+        "status": ep.status,
+        "priority": ep.priority,
+    }
 
 @router.get("/providers")
 async def list_providers(user=Depends(get_current_user_dep)):
@@ -95,11 +105,22 @@ async def list_endpoints(user=Depends(get_current_user_dep)):
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(ApiEndpoint).order_by(ApiEndpoint.priority, ApiEndpoint.id))
         endpoints = result.scalars().all()
-        return [endpoint_to_dict(ep) for ep in endpoints]
+        is_admin = getattr(user, "is_admin", False)
+        if is_admin:
+            return [endpoint_to_dict(ep) for ep in endpoints]
+        # Non-admins only see a minimal, infrastructure-safe view
+        return [endpoint_to_public_dict(ep) for ep in endpoints]
 
 
 @router.post("/endpoints")
 async def create_endpoint(data: EndpointCreate, user=Depends(require_admin)):
+    # SSRF guard: reject disallowed base_url schemes / internal addresses
+    try:
+        from app.services.api_router import validate_base_url
+        validate_base_url(data.base_url)
+    except ValueError as exc:
+        raise HTTPException(400, f"无效的 base_url: {exc}")
+
     async with AsyncSessionLocal() as session:
         ep = ApiEndpoint(
             name=data.name,
@@ -125,6 +146,14 @@ async def update_endpoint(endpoint_id: int, data: EndpointUpdate, user=Depends(r
         ep = result.scalar_one_or_none()
         if not ep:
             raise HTTPException(404, "端点不存在")
+
+        # SSRF guard: reject disallowed base_url schemes / internal addresses
+        if data.base_url is not None:
+            try:
+                from app.services.api_router import validate_base_url
+                validate_base_url(data.base_url)
+            except ValueError as exc:
+                raise HTTPException(400, f"无效的 base_url: {exc}")
 
         # Evict cached client if API key is being changed
         if data.api_key:
@@ -269,7 +298,7 @@ async def unfreeze_endpoint(endpoint_id: int, user=Depends(require_admin)):
 # ── Health dashboard ──
 
 @router.get("/health")
-async def health_dashboard(user=Depends(get_current_user_dep)):
+async def health_dashboard(user=Depends(require_admin)):
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(ApiEndpoint).order_by(ApiEndpoint.id))
         endpoints = result.scalars().all()
@@ -310,7 +339,7 @@ async def health_dashboard(user=Depends(get_current_user_dep)):
 # ── Routing Rules ──
 
 @router.get("/rules")
-async def list_rules(user=Depends(get_current_user_dep)):
+async def list_rules(user=Depends(require_admin)):
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(ApiRoutingRule).order_by(ApiRoutingRule.priority, ApiRoutingRule.id)

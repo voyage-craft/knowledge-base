@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -5,8 +6,11 @@ from pydantic import BaseModel
 from typing import Optional
 from app.core.database import get_db
 from app.api.auth import get_current_user_dep
+from app.core.deps import require_admin
 from app.models.user import User
 from app.models.system_settings import SystemSetting
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -22,15 +26,6 @@ DEFAULT_SETTINGS = {
     "llm_temperature": "0.7",
     "app_name": "知识库",
 }
-
-
-def require_admin(user: User = Depends(get_current_user_dep)) -> User:
-    if not user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="需要管理员权限",
-        )
-    return user
 
 
 class SettingItem(BaseModel):
@@ -209,7 +204,18 @@ async def test_llm_connection(
     except asyncio.TimeoutError:
         return TestLLMResponse(success=False, error="连接超时 (15秒)，请检查地址和网络")
     except Exception as e:
-        return TestLLMResponse(success=False, error=str(e))
+        logger.error("LLM test failed: %s", e)
+        # Sanitize: don't leak API key fragments or internal details
+        error_msg = str(e)
+        if "api" in error_msg.lower() and "key" in error_msg.lower():
+            error_msg = "API Key 无效或权限不足"
+        elif "auth" in error_msg.lower() or "401" in error_msg:
+            error_msg = "认证失败，请检查 API Key"
+        elif "not found" in error_msg.lower() or "404" in error_msg:
+            error_msg = "模型或端点不存在"
+        else:
+            error_msg = "连接失败，请检查配置"
+        return TestLLMResponse(success=False, error=error_msg)
     finally:
         if client:
             try:

@@ -146,7 +146,7 @@ DOCUMENT_PUBLISHING: dict[str, Any] = {
             "output_field": "toc_data",
         }),
         _node("quality_check", "condition", "质量检查", {
-            "field": "quality_score",
+            "field": "toc_data.quality_score",
             "operator": "gte",
             "value": 60,
             "true_branch": "polish",
@@ -355,6 +355,81 @@ TOC_ANALYSIS_EXPORT: dict[str, Any] = {
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Import & Organization Templates
+# ═══════════════════════════════════════════════════════════════════════
+
+IMPORT_ENHANCE: dict[str, Any] = {
+    "name": "导入后自动整理",
+    "description": "导入文档后自动重命名、生成摘要、提取关键词、嵌入向量并打标签",
+    "category": "import",
+    "nodes": [
+        _node("source", "source", "导入的文档", {"filter": "status", "status": "draft"}),
+        _node("rename", "rename", "智能重命名", {"style": "descriptive", "auto_apply": True}),
+        _node("summarize", "summarize", "生成摘要"),
+        _node("keywords", "keywords", "提取关键词"),
+        _node("auto_tag", "auto_tag", "自动标签"),
+        _node("embedding", "embedding", "生成嵌入", {"force_rebuild": False}),
+        _node("save", "save", "保存"),
+    ],
+    "edges": [
+        _edge("source", "rename"),
+        _edge("rename", "summarize"),
+        _edge("summarize", "keywords"),
+        _edge("keywords", "auto_tag"),
+        _edge("auto_tag", "embedding"),
+        _edge("embedding", "save"),
+    ],
+}
+
+QUALITY_GATE: dict[str, Any] = {
+    "name": "质量门禁",
+    "description": "AI 评估文档质量，低分文档自动归档",
+    "category": "quality",
+    "nodes": [
+        _node("source", "source", "待审文档", {"filter": "status", "status": "draft"}),
+        _node("ai_analyze", "ai_analyze", "质量评估", {"analysis_type": "quality_assessment"}),
+        _node("condition", "condition", "质量检查", {
+            "field": "quality_score", "operator": "lt", "value": "50",
+            "true_branch": "set_low", "false_branch": "set_ok",
+        }),
+        _node("set_low", "set_metadata", "标记低质量", {
+            "status": "archived", "add_tags": ["低质量"],
+        }),
+        _node("set_ok", "set_metadata", "标记合格", {
+            "add_tags": ["已审核"],
+        }),
+    ],
+    "edges": [
+        _edge("source", "ai_analyze"),
+        _edge("ai_analyze", "condition"),
+        _edge("condition", "set_low"),
+        _edge("condition", "set_ok"),
+    ],
+}
+
+TRANSLATE_REVIEW: dict[str, Any] = {
+    "name": "翻译 + 人工审核",
+    "description": "翻译文档后等待人工审批，通过后润色保存",
+    "category": "advanced",
+    "nodes": [
+        _node("source", "source", "待翻译文档"),
+        _node("translate", "translate_en", "翻译为英文"),
+        _node("approval", "approval", "人工审核翻译", {
+            "approval_message": "请审核翻译质量",
+        }),
+        _node("polish", "polish", "润色"),
+        _node("save", "save", "保存为新文档", {"mode": "new"}),
+    ],
+    "edges": [
+        _edge("source", "translate"),
+        _edge("translate", "approval"),
+        _edge("approval", "polish"),
+        _edge("polish", "save"),
+    ],
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Registry
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -373,6 +448,10 @@ PRESET_TEMPLATES: dict[str, dict[str, Any]] = {
     "quality_assessment": QUALITY_ASSESSMENT,
     "batch_export": BATCH_EXPORT,
     "toc_analysis_export": TOC_ANALYSIS_EXPORT,
+    # Import & Organization templates
+    "import_enhance": IMPORT_ENHANCE,
+    "quality_gate": QUALITY_GATE,
+    "translate_review": TRANSLATE_REVIEW,
 }
 
 

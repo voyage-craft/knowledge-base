@@ -11,7 +11,7 @@ export async function authCheck(): Promise<User | null> {
   try {
     const res = await fetch(`${BACKEND_URL}/api/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
-      cache: "no-store",
+      next: { revalidate: 60 },
     })
     if (!res.ok) return null
     const data = await res.json()

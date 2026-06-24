@@ -1,0 +1,61 @@
+{
+  "id": "kb.builtin.export",
+  "name": "导出文档",
+  "version": "1.0.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "将文档导出为多种格式的文件以供外部使用",
+  "author": "Knowledge Base Team",
+  "category": "output",
+  "icon": "FileText",
+  "color": "bg-amber-600",
+  "node_type": "export",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "导出格式",
+        "options": [
+          "markdown",
+          "html",
+          "latex",
+          "docx",
+          "pdf"
+        ],
+        "default": "markdown",
+        "key": "format"
+      },
+      {
+        "type": "select",
+        "label": "包含目录",
+        "options": [
+          "true",
+          "false"
+        ],
+        "default": "true",
+        "advanced": true,
+        "key": "include_toc"
+      },
+      {
+        "type": "textarea",
+        "label": "自定义文档头",
+        "placeholder": "自定义文档头",
+        "advanced": true,
+        "key": "custom_header"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "file_write"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本"
+  }
+}

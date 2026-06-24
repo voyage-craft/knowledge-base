@@ -1,0 +1,36 @@
+{
+  "id": "kb.builtin.custom_prompt",
+  "name": "自定义提示词",
+  "version": "1.0.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "使用用户自定义的提示词对文档内容进行处理",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "MessageSquare",
+  "color": "bg-slate-500",
+  "node_type": "custom_prompt",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "textarea",
+        "label": "提示词",
+        "placeholder": "输入自定义提示词...",
+        "key": "prompt"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "llm_access"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本"
+  }
+}

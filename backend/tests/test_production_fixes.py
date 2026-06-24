@@ -55,7 +55,9 @@ def auth_header(token: str) -> dict:
 
 def internal_auth_header(token: str) -> dict:
     """Auth header with internal secret for endpoint-resolve calls."""
-    return {"Authorization": f"Bearer {token}", "X-Internal-Request": "kb-internal-secret-change-me"}
+    import os
+    secret = os.environ.get("INTERNAL_API_SECRET", "test-internal-secret-for-testing")
+    return {"Authorization": f"Bearer {token}", "X-Internal-Request": secret}
 
 
 # ── Login Error Response Tests ──

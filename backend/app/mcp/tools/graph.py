@@ -1,6 +1,7 @@
 """MCP tool: Knowledge graph exploration."""
 
 from app.mcp.server import mcp
+from app.mcp.auth_context import require_user_id
 from app.core.database import AsyncSessionLocal
 from app.models.graph import GraphNode, GraphEdge
 from sqlalchemy import select, or_
@@ -11,13 +12,15 @@ async def search_knowledge_graph(query: str, depth: int = 2) -> dict:
     """Search the knowledge graph for entities and relationships matching the query.
     Returns connected nodes and edges up to the specified depth."""
     depth = max(1, min(depth, 4))
+    user_id = require_user_id()
 
     async with AsyncSessionLocal() as session:
-        # Find matching nodes
+        # Find matching nodes (scoped to this user)
         result = await session.execute(
             select(GraphNode).where(
+                GraphNode.user_id == user_id,
                 or_(
-                    GraphNode.name.ilike(f"%{query}%"),
+                    GraphNode.label.ilike(f"%{query}%"),
                     GraphNode.entity_type.ilike(f"%{query}%"),
                 )
             ).limit(10)
@@ -34,7 +37,7 @@ async def search_knowledge_graph(query: str, depth: int = 2) -> dict:
 
         for n in start_nodes:
             visited_nodes[n.id] = {
-                "id": n.id, "name": n.name, "entity_type": n.entity_type,
+                "id": n.id, "name": n.label, "entity_type": n.entity_type,
                 "description": n.description or "",
             }
 
@@ -42,9 +45,10 @@ async def search_knowledge_graph(query: str, depth: int = 2) -> dict:
             if not current_ids:
                 break
 
-            # Find edges connected to current nodes
+            # Find edges connected to current nodes (scoped to this user)
             edge_result = await session.execute(
                 select(GraphEdge).where(
+                    GraphEdge.user_id == user_id,
                     or_(
                         GraphEdge.source_id.in_(current_ids),
                         GraphEdge.target_id.in_(current_ids),
@@ -67,11 +71,14 @@ async def search_knowledge_graph(query: str, depth: int = 2) -> dict:
             new_ids -= set(visited_nodes.keys())
             if new_ids:
                 node_result = await session.execute(
-                    select(GraphNode).where(GraphNode.id.in_(new_ids))
+                    select(GraphNode).where(
+                        GraphNode.id.in_(new_ids),
+                        GraphNode.user_id == user_id,
+                    )
                 )
                 for n in node_result.scalars().all():
                     visited_nodes[n.id] = {
-                        "id": n.id, "name": n.name, "entity_type": n.entity_type,
+                        "id": n.id, "name": n.label, "entity_type": n.entity_type,
                         "description": n.description or "",
                     }
 

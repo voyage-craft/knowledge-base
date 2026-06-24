@@ -1,0 +1,40 @@
+{
+  "id": "kb.builtin.format_convert",
+  "name": "格式转换",
+  "version": "1.0.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "将文档内容在不同格式之间进行转换",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "FileText",
+  "color": "bg-lime-500",
+  "node_type": "format_convert",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "目标格式",
+        "options": [
+          "markdown",
+          "html",
+          "latex",
+          "docx"
+        ],
+        "default": "markdown",
+        "key": "target_format"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [],
+  "changelog": {
+    "1.0.0": "初始版本"
+  }
+}

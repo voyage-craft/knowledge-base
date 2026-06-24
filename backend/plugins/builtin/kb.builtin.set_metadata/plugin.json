@@ -1,0 +1,52 @@
+{
+  "id": "kb.builtin.set_metadata",
+  "name": "设置元数据",
+  "version": "1.0.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "批量设置文档的状态和标签等元数据信息",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "Tags",
+  "color": "bg-blue-600",
+  "node_type": "set_metadata",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "文档状态",
+        "options": [
+          "draft",
+          "published",
+          "archived"
+        ],
+        "key": "status"
+      },
+      {
+        "type": "text",
+        "label": "添加标签",
+        "placeholder": "逗号分隔的标签",
+        "key": "add_tags"
+      },
+      {
+        "type": "text",
+        "label": "移除标签",
+        "placeholder": "逗号分隔的标签",
+        "key": "remove_tags"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "database_write"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本"
+  }
+}

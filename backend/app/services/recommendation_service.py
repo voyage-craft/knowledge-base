@@ -113,10 +113,19 @@ class RecommendationService:
             )
             relations = relations_result.scalars().all()
 
-            # Get document details
+            # Get document details (batch fetch to avoid N+1)
+            target_doc_ids = [rel.target_doc_id for rel in relations]
+            if target_doc_ids:
+                doc_result = await db.execute(
+                    select(Document).where(Document.id.in_(target_doc_ids))
+                )
+                docs_by_id = {d.id: d for d in doc_result.scalars().all()}
+            else:
+                docs_by_id = {}
+
             similar_docs = []
             for rel in relations:
-                target_doc = await db.get(Document, rel.target_doc_id)
+                target_doc = docs_by_id.get(rel.target_doc_id)
                 if target_doc and target_doc.status != "deleted":
                     similar_docs.append({
                         "document_id": target_doc.id,
@@ -203,9 +212,22 @@ class RecommendationService:
         recommendations = []
         seen_doc_ids = set()
 
+        # Batch fetch all candidate documents to avoid N+1
+        candidate_doc_ids = [
+            rel.target_doc_id for rel in similar_relations
+            if rel.target_doc_id not in known_doc_ids and rel.target_doc_id not in seen_doc_ids
+        ]
+        if candidate_doc_ids:
+            doc_result = await db.execute(
+                select(Document).where(Document.id.in_(candidate_doc_ids))
+            )
+            docs_by_id = {d.id: d for d in doc_result.scalars().all()}
+        else:
+            docs_by_id = {}
+
         for rel in similar_relations:
             if rel.target_doc_id not in known_doc_ids and rel.target_doc_id not in seen_doc_ids:
-                target_doc = await db.get(Document, rel.target_doc_id)
+                target_doc = docs_by_id.get(rel.target_doc_id)
                 if target_doc and target_doc.status != "deleted":
                     recommendations.append({
                         "document_id": target_doc.id,
@@ -275,8 +297,18 @@ class RecommendationService:
         recommendations = []
         max_popularity = collab_docs[0][1] if collab_docs else 1
 
+        # Batch fetch all documents to avoid N+1
+        collab_doc_ids = [doc_id for doc_id, _ in collab_docs]
+        if collab_doc_ids:
+            doc_result = await db.execute(
+                select(Document).where(Document.id.in_(collab_doc_ids))
+            )
+            docs_by_id = {d.id: d for d in doc_result.scalars().all()}
+        else:
+            docs_by_id = {}
+
         for doc_id, popularity in collab_docs:
-            doc = await db.get(Document, doc_id)
+            doc = docs_by_id.get(doc_id)
             if doc and doc.status != "deleted":
                 recommendations.append({
                     "document_id": doc.id,
@@ -314,7 +346,7 @@ class RecommendationService:
 
         # Find entities mentioned in user's documents
         entities_result = await db.execute(
-            select(GraphNode.id, GraphNode.name)
+            select(GraphNode.id, GraphNode.label)
             .where(GraphNode.document_id.in_(user_doc_ids))
             .limit(50)
         )
@@ -343,8 +375,18 @@ class RecommendationService:
         recommendations = []
         max_overlap = related_docs[0][1] if related_docs else 1
 
+        # Batch fetch all documents to avoid N+1
+        graph_doc_ids = [doc_id for doc_id, _ in related_docs]
+        if graph_doc_ids:
+            doc_result = await db.execute(
+                select(Document).where(Document.id.in_(graph_doc_ids))
+            )
+            docs_by_id = {d.id: d for d in doc_result.scalars().all()}
+        else:
+            docs_by_id = {}
+
         for doc_id, overlap in related_docs:
-            doc = await db.get(Document, doc_id)
+            doc = docs_by_id.get(doc_id)
             if doc and doc.status != "deleted":
                 # Get entity names for reason
                 entity_names = [row[1] for row in entities[:3]]
@@ -409,14 +451,22 @@ class RecommendationService:
                 delete(DocumentRelation).where(DocumentRelation.source_doc_id == doc_id)
             )
 
-            # Compute similarities with other documents
-            for other_doc_id in other_doc_ids:
-                other_chunks_result = await db.execute(
+            # Batch fetch chunks for all other documents to avoid N+1
+            if other_doc_ids:
+                all_chunks_result = await db.execute(
                     select(DocumentChunk)
-                    .where(DocumentChunk.document_id == other_doc_id)
+                    .where(DocumentChunk.document_id.in_(other_doc_ids))
                     .where(DocumentChunk.embedding.isnot(None))
                 )
-                other_chunks = other_chunks_result.scalars().all()
+                all_chunks: dict[int, list] = {}
+                for chunk in all_chunks_result.scalars().all():
+                    all_chunks.setdefault(chunk.document_id, []).append(chunk)
+            else:
+                all_chunks = {}
+
+            # Compute similarities with other documents
+            for other_doc_id in other_doc_ids:
+                other_chunks = all_chunks.get(other_doc_id, [])
 
                 if not other_chunks:
                     continue

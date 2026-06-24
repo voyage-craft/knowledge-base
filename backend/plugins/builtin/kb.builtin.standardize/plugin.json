@@ -1,0 +1,49 @@
+{
+  "id": "kb.builtin.standardize",
+  "name": "标准化分析",
+  "version": "1.1.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "使用 AI 对文档进行标准化分析并提取结构化信息",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "ClipboardCheck",
+  "color": "bg-violet-500",
+  "node_type": "standardize",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "分析深度",
+        "options": [
+          "basic",
+          "detailed",
+          "comprehensive"
+        ],
+        "default": "detailed",
+        "key": "analysis_depth"
+      },
+      {
+        "type": "textarea",
+        "label": "自定义分类",
+        "placeholder": "自定义分类（每行一个）",
+        "advanced": true,
+        "key": "custom_categories"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "llm_access"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本",
+    "1.1.0": "新增自定义分类和综合分析深度"
+  }
+}

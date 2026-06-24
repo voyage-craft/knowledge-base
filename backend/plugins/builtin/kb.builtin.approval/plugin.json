@@ -1,0 +1,43 @@
+{
+  "id": "kb.builtin.approval",
+  "name": "人工审批",
+  "version": "1.0.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "在工作流中插入人工审批节点，等待审核通过后继续执行",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "ClipboardCheck",
+  "color": "bg-red-500",
+  "node_type": "approval",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "textarea",
+        "label": "审批消息",
+        "default": "请审核此文档",
+        "key": "approval_message"
+      },
+      {
+        "type": "text",
+        "label": "自动审批时间",
+        "default": "0",
+        "placeholder": "0=不自动审批，单位：小时",
+        "key": "auto_approve_after"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "database_write"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "id": "kb.builtin.ai_analyze",
+  "name": "AI 深度分析",
+  "version": "1.1.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "使用 AI 对文档进行深度分析，提取目录、结构和质量评估",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "Search",
+  "color": "bg-fuchsia-500",
+  "node_type": "ai_analyze",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "分析类型",
+        "options": [
+          "toc_extraction",
+          "structure_analysis",
+          "quality_assessment",
+          "academic_structure"
+        ],
+        "default": "structure_analysis",
+        "key": "analysis_type"
+      },
+      {
+        "type": "text",
+        "label": "输出字段",
+        "default": "analysis_result",
+        "key": "output_field"
+      },
+      {
+        "type": "textarea",
+        "label": "自定义提示词",
+        "advanced": true,
+        "key": "custom_prompt"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "llm_access"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本",
+    "1.1.0": "新增学术结构分析和自定义提示词"
+  }
+}

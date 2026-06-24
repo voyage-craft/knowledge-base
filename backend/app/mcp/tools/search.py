@@ -3,6 +3,7 @@
 import json
 import math
 from app.mcp.server import mcp
+from app.mcp.auth_context import require_user_id
 from app.core.database import AsyncSessionLocal
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
@@ -42,12 +43,14 @@ async def search_documents(
         return {"error": {"code": "INVALID_INPUT", "message": "Query cannot be empty"}}
 
     top_k = max(1, min(top_k, 20))
+    user_id = require_user_id()
 
     async with AsyncSessionLocal() as session:
         if search_type == "keyword":
             escaped = _escape_like(query)
             result = await session.execute(
                 select(Document).where(
+                    Document.user_id == user_id,
                     Document.plain_text.ilike(f"%{escaped}%")
                 ).limit(top_k)
             )
@@ -73,6 +76,7 @@ async def search_documents(
             escaped = _escape_like(query)
             result = await session.execute(
                 select(Document).where(
+                    Document.user_id == user_id,
                     Document.plain_text.ilike(f"%{escaped}%")
                 ).limit(top_k)
             )
@@ -90,6 +94,14 @@ async def search_documents(
                 "note": "Embedding model unavailable, used keyword search",
             }
 
+        # Restrict semantic search to this user's documents
+        owned_doc_ids_result = await session.execute(
+            select(Document.id).where(Document.user_id == user_id)
+        )
+        owned_doc_ids = [r[0] for r in owned_doc_ids_result.fetchall()]
+        if not owned_doc_ids:
+            return {"results": []}
+
         # Batched vector search to avoid loading all embeddings at once
         BATCH_SIZE = 1000
         all_scored = []
@@ -102,7 +114,10 @@ async def search_documents(
             while True:
                 result = await session.execute(
                     select(DocumentChunk)
-                    .where(DocumentChunk.embedding.isnot(None))
+                    .where(
+                        DocumentChunk.embedding.isnot(None),
+                        DocumentChunk.document_id.in_(owned_doc_ids),
+                    )
                     .offset(offset)
                     .limit(BATCH_SIZE)
                 )
@@ -138,7 +153,10 @@ async def search_documents(
             while True:
                 result = await session.execute(
                     select(DocumentChunk)
-                    .where(DocumentChunk.embedding.isnot(None))
+                    .where(
+                        DocumentChunk.embedding.isnot(None),
+                        DocumentChunk.document_id.in_(owned_doc_ids),
+                    )
                     .offset(offset)
                     .limit(BATCH_SIZE)
                 )

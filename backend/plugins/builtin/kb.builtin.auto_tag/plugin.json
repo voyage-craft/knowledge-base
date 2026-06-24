@@ -1,0 +1,61 @@
+{
+  "id": "kb.builtin.auto_tag",
+  "name": "自动打标签",
+  "version": "1.0.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "根据文档内容自动分析并添加合适的标签",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "Tags",
+  "color": "bg-orange-500",
+  "node_type": "auto_tag",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "最大标签数",
+        "options": [
+          "3",
+          "5",
+          "8"
+        ],
+        "default": "5",
+        "key": "max_tags"
+      },
+      {
+        "type": "select",
+        "label": "允许创建新标签",
+        "options": [
+          "true",
+          "false"
+        ],
+        "default": "true",
+        "key": "create_new_tags"
+      },
+      {
+        "type": "select",
+        "label": "标签来源",
+        "options": [
+          "keywords",
+          "ai_generated"
+        ],
+        "default": "keywords",
+        "key": "tag_source"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "database_write"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本"
+  }
+}

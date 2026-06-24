@@ -14,7 +14,7 @@ class GraphNode(Base):
     node_type = Column(String(20), nullable=False)  # "document" | "entity" | "concept"
     label = Column(String(500), nullable=False)
     description = Column(Text, nullable=True)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=True)  # only for document type
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=True, index=True)  # only for document type
     metadata_json = Column(JSON, nullable=True)  # {entity_type, aliases, ...}
     embedding_text = Column(Text, nullable=True)  # text for similarity computation
     created_at = Column(DateTime(timezone=True), server_default=func.now())

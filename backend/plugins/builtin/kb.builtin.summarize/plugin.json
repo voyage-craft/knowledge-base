@@ -1,0 +1,59 @@
+{
+  "id": "kb.builtin.summarize",
+  "name": "生成摘要",
+  "version": "1.1.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "使用 AI 为文档生成不同格式的内容摘要",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "FileText",
+  "color": "bg-teal-500",
+  "node_type": "summarize",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "摘要长度",
+        "options": [
+          "short",
+          "medium",
+          "long"
+        ],
+        "default": "medium",
+        "key": "summary_length"
+      },
+      {
+        "type": "select",
+        "label": "输出格式",
+        "options": [
+          "paragraph",
+          "bullets",
+          "structured"
+        ],
+        "default": "paragraph",
+        "key": "format"
+      },
+      {
+        "type": "textarea",
+        "label": "自定义提示词",
+        "advanced": true,
+        "key": "custom_prompt"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "llm_access"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本",
+    "1.1.0": "新增结构化输出格式"
+  }
+}

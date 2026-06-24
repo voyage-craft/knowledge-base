@@ -1,8 +1,7 @@
 "use client"
 
-import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { Network, RefreshCw, Search, Filter } from "lucide-react"
+import { Sparkles, Search } from "lucide-react"
 
 interface GraphToolbarProps {
   onBuild: () => void
@@ -32,12 +31,11 @@ export function GraphToolbar({
     <div className="flex items-center gap-2 px-4 py-2 border-b bg-background">
       <Button
         size="sm"
-        variant="outline"
         onClick={onBuild}
         disabled={building}
       >
-        <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${building ? "animate-spin" : ""}`} />
-        {building ? "构建中..." : "重建图谱"}
+        <Sparkles className={`h-3.5 w-3.5 mr-1.5 ${building ? "animate-pulse" : ""}`} />
+        {building ? "构建中..." : "构建图谱"}
       </Button>
 
       <div className="h-5 w-px bg-border mx-1" />

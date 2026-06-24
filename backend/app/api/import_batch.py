@@ -2,7 +2,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.core.database import get_db
+from app.core.database import get_db, AsyncSessionLocal
 from app.models.import_batch import ImportBatch, ImportFile
 from app.models.document import Document, Folder, Tag, document_tags
 from app.models.user import User
@@ -163,45 +163,95 @@ async def analyze_batch(
     if not pending_files:
         raise HTTPException(status_code=400, detail="没有待分析的文件")
 
+    # Update batch status
     batch.status = "processing"
-    await db.flush()
-
-    for imp_file in pending_files:
-        if not imp_file.raw_text:
-            imp_file.status = "error"
-            imp_file.error_message = "文件内容为空，无法分析"
-            continue
-
-        imp_file.status = "analyzing"
-        await db.flush()
-
-        try:
-            analysis = await ai_pipeline.analyze_document(imp_file.raw_text, imp_file.filename)
-            imp_file.ai_analysis = analysis
-            imp_file.status = "ready"
-            batch.processed_count += 1
-        except Exception as e:
-            logger.error("AI analysis failed for %s: %s", imp_file.filename, e)
-            imp_file.status = "error"
-            imp_file.error_message = f"AI分析失败: {e}"
-
-    batch.status = "review"
     await db.commit()
 
-    # Refresh
-    files_result = await db.execute(
-        select(ImportFile).where(ImportFile.batch_id == batch.id)
-    )
-    all_files = files_result.scalars().all()
+    # Get file IDs (detached from session before concurrent work)
+    file_ids = [f.id for f in pending_files]
+    raw_texts = {f.id: f.raw_text for f in pending_files}
+    filenames = {f.id: f.filename for f in pending_files}
 
-    return ImportBatchResponse(
-        id=batch.id,
-        status=batch.status,
-        total_files=batch.total_files,
-        processed_count=batch.processed_count,
-        created_at=batch.created_at,
-        files=[ImportFileResponse.model_validate(f) for f in all_files],
-    )
+    import asyncio
+
+    async def analyze_one(file_id: int):
+        """Analyze a single file using its own DB session."""
+        raw_text = raw_texts.get(file_id)
+        filename = filenames.get(file_id, "unknown")
+
+        if not raw_text:
+            async with AsyncSessionLocal() as sess:
+                result = await sess.execute(select(ImportFile).where(ImportFile.id == file_id))
+                f = result.scalar_one_or_none()
+                if f:
+                    f.status = "error"
+                    f.error_message = "文件内容为空，无法分析"
+                    await sess.commit()
+            return
+
+        # Mark as analyzing
+        async with AsyncSessionLocal() as sess:
+            result = await sess.execute(select(ImportFile).where(ImportFile.id == file_id))
+            f = result.scalar_one_or_none()
+            if f:
+                f.status = "analyzing"
+                await sess.commit()
+
+        # Run AI analysis (no DB needed)
+        try:
+            analysis = await ai_pipeline.analyze_document(raw_text, filename)
+        except Exception as e:
+            logger.error("AI analysis failed for %s: %s", filename, e)
+            analysis = None
+
+        # Save result
+        async with AsyncSessionLocal() as sess:
+            result = await sess.execute(select(ImportFile).where(ImportFile.id == file_id))
+            f = result.scalar_one_or_none()
+            if f:
+                if analysis:
+                    f.ai_analysis = analysis
+                    f.status = "ready"
+                else:
+                    f.status = "error"
+                    f.error_message = "AI 分析失败，请稍后重试"
+                await sess.commit()
+
+    # Process files concurrently (max 3 parallel LLM calls)
+    semaphore = asyncio.Semaphore(3)
+
+    async def limited_analyze(file_id: int):
+        async with semaphore:
+            return await analyze_one(file_id)
+
+    await asyncio.gather(*[limited_analyze(fid) for fid in file_ids])
+
+    # Update batch status and get final results (all in one session for consistency)
+    async with AsyncSessionLocal() as sess:
+        result = await sess.execute(select(ImportBatch).where(ImportBatch.id == batch_id))
+        batch = result.scalar_one_or_none()
+        if batch:
+            # Count ready and error files
+            files_result = await sess.execute(
+                select(ImportFile).where(ImportFile.batch_id == batch.id)
+            )
+            all_files = files_result.scalars().all()
+            ready_count = sum(1 for f in all_files if f.status == "ready")
+            batch.processed_count = ready_count
+            batch.status = "review"
+            await sess.commit()
+
+            return ImportBatchResponse(
+                id=batch.id,
+                status=batch.status,
+                total_files=batch.total_files,
+                processed_count=batch.processed_count,
+                created_at=batch.created_at,
+                files=[ImportFileResponse.model_validate(f) for f in all_files],
+            )
+
+    # Fallback (should not reach here)
+    raise HTTPException(status_code=500, detail="分析完成后无法获取结果")
 
 
 @router.put("/file/{file_id}", response_model=ImportFileResponse)
@@ -329,14 +379,19 @@ async def approve_files(
 
         # Apply suggested tags
         suggested_tags = analysis.get("suggested_tags", [])
-        for tag_name in suggested_tags:
+        # Batch fetch existing tags to avoid N+1
+        if suggested_tags:
             tag_result = await db.execute(
                 select(Tag).where(
                     Tag.user_id == current_user.id,
-                    Tag.name == tag_name,
+                    Tag.name.in_(suggested_tags),
                 )
             )
-            tag = tag_result.scalar_one_or_none()
+            existing_tags = {t.name: t for t in tag_result.scalars().all()}
+        else:
+            existing_tags = {}
+        for tag_name in suggested_tags:
+            tag = existing_tags.get(tag_name)
             if not tag:
                 tag = Tag(name=tag_name, user_id=current_user.id)
                 db.add(tag)

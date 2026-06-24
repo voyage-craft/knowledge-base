@@ -34,8 +34,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
-        finally:
-            await session.close()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 @asynccontextmanager
@@ -83,8 +84,8 @@ async def init_db():
         await conn.execute(text("PRAGMA cache_size=-64000"))
         # Enable foreign keys
         await conn.execute(text("PRAGMA foreign_keys=ON"))
-        # Set busy timeout to 5 seconds
-        await conn.execute(text("PRAGMA busy_timeout=5000"))
+        # Set busy timeout to 30 seconds (handles concurrent write contention)
+        await conn.execute(text("PRAGMA busy_timeout=30000"))
 
         # Create all tables
         await conn.run_sync(Base.metadata.create_all)

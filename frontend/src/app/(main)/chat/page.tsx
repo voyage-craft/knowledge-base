@@ -1,12 +1,12 @@
 "use client"
 
-import { useState, useMemo, useEffect, useRef, FormEvent, ChangeEvent, useCallback } from "react"
+import { useState, useMemo, useEffect, useLayoutEffect, useRef, FormEvent, ChangeEvent, useCallback } from "react"
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Card, CardContent } from "@/components/ui/card"
-import { Send, Bot, User, FileText, X, Search, ArrowDown, AlertCircle } from "lucide-react"
+import { Send, FileText, X, Search, ArrowDown, AlertCircle } from "lucide-react"
+import { ChatBubble, TypingIndicator } from "@/components/ChatBubble"
 
 interface RAGResult {
   document_id: number
@@ -28,13 +28,13 @@ export default function ChatPage() {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const isStreaming = status === "streaming" || status === "submitted"
+  const isWaiting = status === "submitted"
 
   // Show error when chat fails
   useEffect(() => {
     if (status === "error" || error) {
       setChatError(error?.message || "AI 服务暂时不可用，请检查配置或稍后重试")
     } else if (status === "ready" && chatError) {
-      // Clear error when next message succeeds
       setChatError(null)
     }
   }, [status, error, chatError])
@@ -47,14 +47,14 @@ export default function ChatPage() {
     setIsNearBottom(nearBottom)
   }, [])
 
-  // Smart auto-scroll: only scroll to bottom if user is already near bottom
-  useEffect(() => {
+  // Smooth auto-scroll using useLayoutEffect + rAF
+  useLayoutEffect(() => {
     const el = scrollRef.current
-    if (!el) return
-    if (isNearBottom) {
-      el.scrollTop = el.scrollHeight
-    }
-  }, [messages, isNearBottom])
+    if (!el || !isNearBottom) return
+    requestAnimationFrame(() => {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+    })
+  }, [messages, isNearBottom, status])
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current
@@ -86,8 +86,6 @@ export default function ChatPage() {
     sendMessage({ text: chatInput })
     searchRAG(chatInput)
     setChatInput("")
-    // Scroll to bottom when sending a message
-    setTimeout(scrollToBottom, 100)
   }
 
   return (
@@ -100,33 +98,26 @@ export default function ChatPage() {
       <div ref={scrollRef} onScroll={checkScrollPosition} className="flex-1 overflow-y-auto p-6 relative">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground py-20">
-            <Bot className="h-16 w-16 mb-4 opacity-20" />
+            <div className="p-4 rounded-full bg-muted mb-4">
+              <svg className="h-12 w-12 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+            </div>
             <p className="text-base font-medium">可以问我关于文档的任何问题</p>
             <p className="text-sm mt-2 opacity-70">我能帮你查找、总结和组织信息</p>
           </div>
         ) : (
           <div className="space-y-4 max-w-3xl mx-auto">
             {messages.map(m => (
-              <div key={m.id} className={`flex gap-3 ${m.role === "user" ? "justify-end" : ""}`}>
-                {m.role === "assistant" && (
-                  <div className="p-2 rounded-full bg-blue-100 dark:bg-blue-900 shrink-0 self-start">
-                    <Bot className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-                  </div>
-                )}
-                <Card className={`max-w-[80%] ${m.role === "user" ? "bg-blue-50 dark:bg-blue-950" : ""}`}>
-                  <CardContent className="p-3 prose prose-sm max-w-none dark:prose-invert">
-                    {m.parts
-                      .filter(p => p.type === "text")
-                      .map((p, i) => <span key={i}>{p.text}</span>)}
-                  </CardContent>
-                </Card>
-                {m.role === "user" && (
-                  <div className="p-2 rounded-full bg-slate-100 dark:bg-slate-800 shrink-0 self-start">
-                    <User className="h-4 w-4" />
-                  </div>
-                )}
-              </div>
+              <ChatBubble
+                key={m.id}
+                id={m.id}
+                role={m.role as "user" | "assistant"}
+                textParts={m.parts.filter(p => p.type === "text").map(p => p.text)}
+              />
             ))}
+            {/* Typing indicator while waiting for first token */}
+            {isWaiting && <TypingIndicator />}
           </div>
         )}
 

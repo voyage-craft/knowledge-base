@@ -2,13 +2,21 @@
 
 import json
 from app.mcp.server import mcp
+from app.mcp.auth_context import require_user_id
 from app.core.database import AsyncSessionLocal
 from app.models.document import Document, Tag, document_tags
 from sqlalchemy import select
 
 
-async def _get_or_create_user_id(session) -> int:
-    """Get the first admin user ID as default for MCP-created documents."""
+async def _resolve_user_id(session) -> int:
+    """Resolve the acting user id for MCP operations.
+
+    Uses the authenticated SSE caller when present; falls back to the first
+    admin only for the trusted local stdio transport.
+    """
+    uid = require_user_id()
+    if uid:
+        return uid
     from app.models.user import User
     result = await session.execute(select(User.id).where(User.is_admin == True).limit(1))
     row = result.first()
@@ -42,7 +50,7 @@ async def create_document(
             content_json = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": content_markdown}]}]}
             plain_text = content_markdown
 
-        user_id = await _get_or_create_user_id(session)
+        user_id = await _resolve_user_id(session)
 
         doc = Document(
             title=title,
@@ -58,7 +66,9 @@ async def create_document(
 
         if tags:
             for tag_name in tags:
-                tag_result = await session.execute(select(Tag).where(Tag.name == tag_name))
+                tag_result = await session.execute(
+                    select(Tag).where(Tag.name == tag_name, Tag.user_id == user_id)
+                )
                 tag = tag_result.scalar_one_or_none()
                 if not tag:
                     tag = Tag(name=tag_name, user_id=user_id)
@@ -85,7 +95,10 @@ async def update_document(
 ) -> dict:
     """Update an existing document's title or content. Creates a version snapshot before updating."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(Document).where(Document.id == document_id))
+        user_id = await _resolve_user_id(session)
+        result = await session.execute(
+            select(Document).where(Document.id == document_id, Document.user_id == user_id)
+        )
         doc = result.scalar_one_or_none()
         if not doc:
             return {"error": {"code": "NOT_FOUND", "message": f"Document {document_id} not found"}}
@@ -123,7 +136,10 @@ async def update_document(
 async def delete_document(document_id: int, permanent: bool = False) -> dict:
     """Delete or archive a document. By default archives (status='archived'). Set permanent=True to fully delete."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(Document).where(Document.id == document_id))
+        user_id = await _resolve_user_id(session)
+        result = await session.execute(
+            select(Document).where(Document.id == document_id, Document.user_id == user_id)
+        )
         doc = result.scalar_one_or_none()
         if not doc:
             return {"error": {"code": "NOT_FOUND", "message": f"Document {document_id} not found"}}
@@ -142,7 +158,10 @@ async def delete_document(document_id: int, permanent: bool = False) -> dict:
 async def move_document(document_id: int, folder_id: int | None = None, status: str | None = None) -> dict:
     """Move a document to a different folder or change its status."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(Document).where(Document.id == document_id))
+        user_id = await _resolve_user_id(session)
+        result = await session.execute(
+            select(Document).where(Document.id == document_id, Document.user_id == user_id)
+        )
         doc = result.scalar_one_or_none()
         if not doc:
             return {"error": {"code": "NOT_FOUND", "message": f"Document {document_id} not found"}}
@@ -162,16 +181,19 @@ async def move_document(document_id: int, folder_id: int | None = None, status: 
 async def manage_tags(document_id: int, add_tags: list[str] | None = None, remove_tags: list[str] | None = None) -> dict:
     """Add or remove tags from a document."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(Document).where(Document.id == document_id))
+        user_id = await _resolve_user_id(session)
+        result = await session.execute(
+            select(Document).where(Document.id == document_id, Document.user_id == user_id)
+        )
         doc = result.scalar_one_or_none()
         if not doc:
             return {"error": {"code": "NOT_FOUND", "message": f"Document {document_id} not found"}}
 
-        user_id = doc.user_id or await _get_or_create_user_id(session)
-
         if add_tags:
             for tag_name in add_tags:
-                tag_result = await session.execute(select(Tag).where(Tag.name == tag_name))
+                tag_result = await session.execute(
+                    select(Tag).where(Tag.name == tag_name, Tag.user_id == user_id)
+                )
                 tag = tag_result.scalar_one_or_none()
                 if not tag:
                     tag = Tag(name=tag_name, user_id=user_id)
@@ -189,7 +211,9 @@ async def manage_tags(document_id: int, add_tags: list[str] | None = None, remov
 
         if remove_tags:
             for tag_name in remove_tags:
-                tag_result = await session.execute(select(Tag).where(Tag.name == tag_name))
+                tag_result = await session.execute(
+                    select(Tag).where(Tag.name == tag_name, Tag.user_id == user_id)
+                )
                 tag = tag_result.scalar_one_or_none()
                 if tag:
                     await session.execute(

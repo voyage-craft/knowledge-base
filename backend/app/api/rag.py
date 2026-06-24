@@ -1,10 +1,13 @@
 """RAG (Retrieval-Augmented Generation) API endpoints.
 
 Provides document embedding generation and similarity search.
+Optimized with embedding matrix caching and search result caching.
 """
 
 import json
 import logging
+import time
+from collections import OrderedDict
 
 try:
     import numpy as np
@@ -28,6 +31,17 @@ from app.services.embedding_service import embedding_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/rag", tags=["rag"])
+
+# ── Caching ──
+
+# Search result cache: key = (user_id, q, top_k, threshold) -> (result, timestamp)
+_search_cache: OrderedDict[tuple, tuple] = OrderedDict()
+SEARCH_CACHE_TTL = 5  # seconds
+_SEARCH_CACHE_MAX = 100  # max cached search results
+
+# Embedding matrix cache: user_id -> (matrix, chunk_ids, timestamp)
+_embedding_cache: OrderedDict[int, tuple] = OrderedDict()
+EMBEDDING_CACHE_MAX = 10  # max users to cache
 
 
 class EmbedResponse(BaseModel):
@@ -67,6 +81,8 @@ async def embed_document(
     if not doc or doc.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="文档不存在")
 
+    # Invalidate cache before background task runs
+    invalidate_embedding_cache(current_user.id)
     background_tasks.add_task(_embed_document_task, document_id, current_user.id)
     return EmbedResponse(document_id=document_id, chunks_created=0)
 
@@ -86,6 +102,9 @@ async def embed_batch(
         )
     )
     doc_ids = [row[0] for row in result.all()]
+
+    # Invalidate cache before batch processing
+    invalidate_embedding_cache(current_user.id)
 
     for doc_id in doc_ids:
         background_tasks.add_task(_embed_document_task, doc_id, current_user.id)
@@ -107,6 +126,8 @@ async def delete_embeddings(
         )
     )
     await db.commit()
+    # Invalidate cache after deletion
+    invalidate_embedding_cache(current_user.id)
     return {"message": "嵌入数据已删除"}
 
 
@@ -156,92 +177,66 @@ async def search(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_dep),
 ):
-    """Semantic search across user's document chunks."""
+    """Semantic search across user's document chunks with caching."""
+    # Check search result cache
+    cache_key = (current_user.id, q, top_k, threshold)
+    cached = _search_cache.get(cache_key)
+    if cached and (time.time() - cached[1]) < SEARCH_CACHE_TTL:
+        _search_cache.move_to_end(cache_key)
+        return cached[0]
+
     # Embed the query
     try:
         query_embedding = await embedding_service.embed_query(q)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    # Load all user's chunks with embeddings
-    result = await db.execute(
-        select(DocumentChunk).where(
-            DocumentChunk.user_id == current_user.id,
-            DocumentChunk.embedding.isnot(None),
-        )
-    )
-    chunks = result.scalars().all()
+    # Load embedding matrix (from cache or DB)
+    chunks_data = await _get_cached_embeddings(db, current_user.id)
 
-    if not chunks:
-        return SearchResponse(results=[], query=q)
+    if not chunks_data:
+        empty = SearchResponse(results=[], query=q)
+        return empty
 
-    # Compute similarities
-    scored: list[tuple[DocumentChunk, float]] = []
+    scored: list[tuple] = []
 
     if HAS_NUMPY:
         # Optimized numpy batch computation
-        embeddings_list = []
-        valid_chunks = []
-
-        for chunk in chunks:
-            try:
-                emb = json.loads(chunk.embedding) if isinstance(chunk.embedding, str) else chunk.embedding
-                if emb and len(emb) > 0:
-                    embeddings_list.append(emb)
-                    valid_chunks.append(chunk)
-            except (json.JSONDecodeError, TypeError):
-                continue
-
-        if not embeddings_list:
-            return SearchResponse(results=[], query=q)
+        embeddings_list = [cd["embedding"] for cd in chunks_data]
 
         # Convert to numpy arrays for batch computation
         embeddings_matrix = np.array(embeddings_list)
         query_vec = np.array(query_embedding)
 
-        # Batch cosine similarity: dot product / (norm * norm)
+        # Batch cosine similarity
         norms = np.linalg.norm(embeddings_matrix, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1, norms)  # Avoid division by zero
+        norms = np.where(norms == 0, 1, norms)
         normalized_embeddings = embeddings_matrix / norms
 
-        # Normalize query
         query_norm = np.linalg.norm(query_vec)
         if query_norm == 0:
             return SearchResponse(results=[], query=q)
         normalized_query = query_vec / query_norm
 
-        # Compute similarities
         scores = normalized_embeddings @ normalized_query
 
-        # Filter by threshold and get top_k
         mask = scores >= threshold
         filtered_indices = np.where(mask)[0]
         filtered_scores = scores[mask]
 
-        # Sort by score descending
         sorted_indices = np.argsort(filtered_scores)[::-1][:top_k]
-
-        # Build results
-        scored = [(valid_chunks[filtered_indices[i]], float(filtered_scores[i])) for i in sorted_indices]
+        scored = [(chunks_data[filtered_indices[i]], float(filtered_scores[i])) for i in sorted_indices]
     else:
-        # Fallback: pure Python implementation
         from app.services.embedding_service import cosine_similarity
-
-        for chunk in chunks:
-            try:
-                emb = json.loads(chunk.embedding) if isinstance(chunk.embedding, str) else chunk.embedding
-                score = cosine_similarity(query_embedding, emb)
-                if score >= threshold:
-                    scored.append((chunk, score))
-            except (json.JSONDecodeError, TypeError):
-                continue
-
-        # Sort by score descending, take top_k
+        for cd in chunks_data:
+            score = cosine_similarity(query_embedding, cd["embedding"])
+            if score >= threshold:
+                scored.append((cd, score))
         scored.sort(key=lambda x: x[1], reverse=True)
         scored = scored[:top_k]
 
     # Fetch document titles
-    doc_ids = list(set(chunk.document_id for chunk, _ in scored))
+    doc_ids = list(set(cd["document_id"] for cd, _ in scored))
     if doc_ids:
         doc_result = await db.execute(
             select(Document.id, Document.title).where(Document.id.in_(doc_ids))
@@ -252,16 +247,86 @@ async def search(
 
     results = [
         SearchResult(
-            document_id=chunk.document_id,
-            document_title=title_map.get(chunk.document_id, "未知文档"),
-            chunk_index=chunk.chunk_index,
-            chunk_text=chunk.chunk_text[:500],
+            document_id=cd["document_id"],
+            document_title=title_map.get(cd["document_id"], "未知文档"),
+            chunk_index=cd["chunk_index"],
+            chunk_text=cd["chunk_text"][:500],
             score=round(score, 4),
         )
-        for chunk, score in scored
+        for cd, score in scored
     ]
 
-    return SearchResponse(results=results, query=q)
+    response = SearchResponse(results=results, query=q)
+
+    # Cache the result
+    _search_cache[cache_key] = (response, time.time())
+    _search_cache.move_to_end(cache_key)
+    if len(_search_cache) > _SEARCH_CACHE_MAX:
+        _search_cache.popitem(last=False)
+    # Evict stale cache entries
+    stale_keys = [k for k, (_, ts) in _search_cache.items() if (time.time() - ts) > SEARCH_CACHE_TTL * 10]
+    for k in stale_keys:
+        _search_cache.pop(k, None)
+
+    return response
+
+
+async def _get_cached_embeddings(db: AsyncSession, user_id: int) -> list[dict]:
+    """Load and cache user's embedding matrix. Returns list of chunk dicts with pre-parsed embeddings."""
+    cached = _embedding_cache.get(user_id)
+    if cached:
+        # Move to end (LRU)
+        _embedding_cache.move_to_end(user_id)
+        matrix, chunk_list, ts = cached
+        # Cache valid for 60 seconds
+        if (time.time() - ts) < 60:
+            return chunk_list
+
+    # Load from DB
+    result = await db.execute(
+        select(DocumentChunk).where(
+            DocumentChunk.user_id == user_id,
+            DocumentChunk.embedding.isnot(None),
+        )
+    )
+    chunks = result.scalars().all()
+
+    if not chunks:
+        return []
+
+    chunk_list = []
+    for chunk in chunks:
+        try:
+            emb = json.loads(chunk.embedding) if isinstance(chunk.embedding, str) else chunk.embedding
+            if emb and len(emb) > 0:
+                chunk_list.append({
+                    "document_id": chunk.document_id,
+                    "chunk_index": chunk.chunk_index,
+                    "chunk_text": chunk.chunk_text,
+                    "embedding": emb,
+                })
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    # Evict LRU if at capacity
+    while len(_embedding_cache) >= EMBEDDING_CACHE_MAX:
+        _embedding_cache.popitem(last=False)
+
+    _embedding_cache[user_id] = (None, chunk_list, time.time())
+    return chunk_list
+
+
+def invalidate_embedding_cache(user_id: int | None = None):
+    """Invalidate embedding cache for a user (or all users)."""
+    if user_id is not None:
+        _embedding_cache.pop(user_id, None)
+        # Also invalidate search results for this user
+        stale = [k for k in _search_cache if k[0] == user_id]
+        for k in stale:
+            _search_cache.pop(k, None)
+    else:
+        _embedding_cache.clear()
+        _search_cache.clear()
 
 
 async def _embed_document_task(document_id: int, user_id: int):

@@ -1,0 +1,54 @@
+{
+  "id": "kb.builtin.fix",
+  "name": "修正语法",
+  "version": "1.1.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "使用 AI 修正文档中的语法、拼写和样式错误",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "Wrench",
+  "color": "bg-amber-500",
+  "node_type": "fix",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "修正范围",
+        "options": [
+          "grammar",
+          "spelling",
+          "style",
+          "all"
+        ],
+        "default": "all",
+        "key": "fix_scope"
+      },
+      {
+        "type": "select",
+        "label": "严格程度",
+        "options": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default": "medium",
+        "key": "strictness"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "llm_access"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本",
+    "1.1.0": "新增严格程度调节"
+  }
+}

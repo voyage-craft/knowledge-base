@@ -1,0 +1,76 @@
+{
+  "id": "kb.builtin.polish",
+  "name": "AI 润色",
+  "version": "1.2.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "使用 AI 对文档内容进行智能润色和优化",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "Sparkles",
+  "color": "bg-blue-500",
+  "node_type": "polish",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "润色风格",
+        "options": [
+          "academic",
+          "casual",
+          "formal",
+          "creative"
+        ],
+        "default": "academic",
+        "key": "style"
+      },
+      {
+        "type": "textarea",
+        "label": "自定义提示词",
+        "placeholder": "可选：覆盖默认润色提示词",
+        "advanced": true,
+        "key": "custom_prompt"
+      },
+      {
+        "type": "select",
+        "label": "最大 Token 数",
+        "options": [
+          "1024",
+          "2048",
+          "4096"
+        ],
+        "default": "4096",
+        "advanced": true,
+        "key": "max_tokens"
+      },
+      {
+        "type": "select",
+        "label": "温度",
+        "options": [
+          "0.1",
+          "0.3",
+          "0.5",
+          "0.7"
+        ],
+        "default": "0.3",
+        "advanced": true,
+        "key": "temperature"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "llm_access"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本",
+    "1.1.0": "新增自定义提示词和高级参数",
+    "1.2.0": "优化润色效果，新增创意风格"
+  }
+}

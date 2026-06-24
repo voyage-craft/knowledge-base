@@ -1,0 +1,60 @@
+{
+  "id": "kb.builtin.rename",
+  "name": "智能重命名",
+  "version": "1.0.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "使用 AI 根据文档内容智能生成更合适的标题",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "Sparkles",
+  "color": "bg-emerald-600",
+  "node_type": "rename",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "命名风格",
+        "options": [
+          "descriptive",
+          "concise",
+          "academic",
+          "keyword_prefix",
+          "question"
+        ],
+        "default": "descriptive",
+        "key": "style"
+      },
+      {
+        "type": "text",
+        "label": "最大长度",
+        "default": "60",
+        "key": "max_length"
+      },
+      {
+        "type": "select",
+        "label": "自动应用",
+        "options": [
+          "true",
+          "false"
+        ],
+        "default": "false",
+        "key": "auto_apply"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "llm_access",
+    "database_write"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本"
+  }
+}

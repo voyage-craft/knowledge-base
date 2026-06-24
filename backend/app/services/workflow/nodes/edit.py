@@ -40,11 +40,13 @@ class EditProcessorBase(NodeProcessor):
             )
             input_text = input_text[:max_length]
 
-        system = await get_prompt(self.prompt_key)
+        system = await self._build_prompt(context)
+        extra_kwargs = self._get_extra_kwargs(context)
         result = await llm_service.generate(
             messages=[{"role": "user", "content": input_text}],
             system=system,
             max_tokens=4096,
+            **extra_kwargs,
         )
 
         # Check for LLM errors
@@ -61,6 +63,14 @@ class EditProcessorBase(NodeProcessor):
                 "output_length": len(result),
             },
         )
+
+    async def _build_prompt(self, context: NodeContext) -> str:
+        """Build system prompt. Override in subclasses for custom prompts."""
+        return await get_prompt(self.prompt_key)
+
+    def _get_extra_kwargs(self, context: NodeContext) -> dict:
+        """Return extra kwargs for the LLM generate call. Override in subclasses."""
+        return {}
 
     def _is_llm_error(self, result: str) -> bool:
         """Check if LLM result indicates an error.
@@ -94,12 +104,41 @@ class PolishProcessor(EditProcessorBase):
     prompt_key = "prompt_edit_polish"
     action_name = "润色"
 
+    async def _build_prompt(self, context: NodeContext) -> str:
+        config = context.node.get("config", {})
+        custom_prompt = config.get("custom_prompt", "")
+        if custom_prompt and custom_prompt.strip():
+            return custom_prompt.strip()
+
+        style = config.get("style", "academic")
+        default_prompt = await get_prompt(self.prompt_key)
+        return f"{default_prompt}\n\nStyle: {style}. Apply {style} writing style conventions."
+
+    def _get_extra_kwargs(self, context: NodeContext) -> dict:
+        config = context.node.get("config", {})
+        temperature = config.get("temperature", 0.3)
+        return {"temperature": temperature}
+
 
 @NodeProcessorRegistry.register("expand")
 class ExpandProcessor(EditProcessorBase):
     """Add more details, examples, and context to text."""
     prompt_key = "prompt_edit_expand"
     action_name = "扩展"
+
+    async def _build_prompt(self, context: NodeContext) -> str:
+        config = context.node.get("config", {})
+        custom_prompt = config.get("custom_prompt", "")
+        if custom_prompt and custom_prompt.strip():
+            return custom_prompt.strip()
+
+        expansion_ratio = config.get("expansion_ratio", "2x")
+        focus_area = config.get("focus_area", "")
+        default_prompt = await get_prompt(self.prompt_key)
+        parts = [default_prompt, f"\n\nExpansion target: approximately {expansion_ratio} the original length."]
+        if focus_area and focus_area.strip():
+            parts.append(f" Focus especially on: {focus_area.strip()}.")
+        return "".join(parts)
 
 
 @NodeProcessorRegistry.register("compress")
@@ -108,12 +147,41 @@ class CompressProcessor(EditProcessorBase):
     prompt_key = "prompt_edit_compress"
     action_name = "压缩"
 
+    async def _build_prompt(self, context: NodeContext) -> str:
+        config = context.node.get("config", {})
+        custom_prompt = config.get("custom_prompt", "")
+        if custom_prompt and custom_prompt.strip():
+            return custom_prompt.strip()
+
+        target_ratio = config.get("target_ratio", "50%")
+        preserve_key_points = config.get("preserve_key_points", True)
+        default_prompt = await get_prompt(self.prompt_key)
+        parts = [default_prompt, f"\n\nTarget compression ratio: {target_ratio} of the original length."]
+        if preserve_key_points:
+            parts.append(" Ensure all key points and main arguments are preserved.")
+        return "".join(parts)
+
 
 @NodeProcessorRegistry.register("translate_zh")
 class TranslateZhProcessor(EditProcessorBase):
     """Translate text to Chinese."""
     prompt_key = "prompt_edit_translate_zh"
     action_name = "翻译为中文"
+
+    async def _build_prompt(self, context: NodeContext) -> str:
+        config = context.node.get("config", {})
+        custom_prompt = config.get("custom_prompt", "")
+        if custom_prompt and custom_prompt.strip():
+            return custom_prompt.strip()
+
+        formality = config.get("formality", "neutral")
+        domain = config.get("domain", "general")
+        glossary = config.get("glossary", "")
+        default_prompt = await get_prompt(self.prompt_key)
+        parts = [default_prompt, f"\n\nFormality level: {formality}. Domain: {domain}."]
+        if glossary and glossary.strip():
+            parts.append(f" Use the following glossary for consistent terminology: {glossary.strip()}")
+        return "".join(parts)
 
 
 @NodeProcessorRegistry.register("translate_en")
@@ -122,9 +190,38 @@ class TranslateEnProcessor(EditProcessorBase):
     prompt_key = "prompt_edit_translate_en"
     action_name = "翻译为英文"
 
+    async def _build_prompt(self, context: NodeContext) -> str:
+        config = context.node.get("config", {})
+        custom_prompt = config.get("custom_prompt", "")
+        if custom_prompt and custom_prompt.strip():
+            return custom_prompt.strip()
+
+        formality = config.get("formality", "neutral")
+        domain = config.get("domain", "general")
+        glossary = config.get("glossary", "")
+        default_prompt = await get_prompt(self.prompt_key)
+        parts = [default_prompt, f"\n\nFormality level: {formality}. Domain: {domain}."]
+        if glossary and glossary.strip():
+            parts.append(f" Use the following glossary for consistent terminology: {glossary.strip()}")
+        return "".join(parts)
+
 
 @NodeProcessorRegistry.register("fix")
 class FixProcessor(EditProcessorBase):
     """Fix grammar, spelling, and punctuation errors."""
     prompt_key = "prompt_edit_fix"
     action_name = "修正语法"
+
+    async def _build_prompt(self, context: NodeContext) -> str:
+        config = context.node.get("config", {})
+        custom_prompt = config.get("custom_prompt", "")
+        if custom_prompt and custom_prompt.strip():
+            return custom_prompt.strip()
+
+        fix_scope = config.get("fix_scope", "all")
+        strictness = config.get("strictness", "medium")
+        default_prompt = await get_prompt(self.prompt_key)
+        parts = [default_prompt, f"\n\nFix scope: {fix_scope}. Strictness level: {strictness}."]
+        if fix_scope != "all":
+            parts.append(f" Only fix issues related to: {fix_scope}.")
+        return "".join(parts)

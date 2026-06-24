@@ -8,8 +8,8 @@ import { createAnthropic } from "@ai-sdk/anthropic"
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000"
 
-// ── Shared secret for internal API calls ──
-const INTERNAL_SECRET = process.env.INTERNAL_API_SECRET || "kb-internal-secret-change-me"
+// ── Shared secret for internal API calls (must be set in .env.local) ──
+const INTERNAL_SECRET = process.env.INTERNAL_API_SECRET || ""
 
 export interface EndpointCredentials {
   endpoint_id: number

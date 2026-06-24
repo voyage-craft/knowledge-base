@@ -1,0 +1,55 @@
+{
+  "id": "kb.builtin.expand",
+  "name": "内容扩展",
+  "version": "1.1.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "使用 AI 对文档内容进行扩展和丰富",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "Expand",
+  "color": "bg-indigo-500",
+  "node_type": "expand",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "扩展比例",
+        "options": [
+          "1.5x",
+          "2x",
+          "3x"
+        ],
+        "default": "2x",
+        "key": "expansion_ratio"
+      },
+      {
+        "type": "text",
+        "label": "扩展方向",
+        "placeholder": "可选：扩展重点方向",
+        "advanced": true,
+        "key": "focus_area"
+      },
+      {
+        "type": "textarea",
+        "label": "自定义提示词",
+        "advanced": true,
+        "key": "custom_prompt"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "llm_access"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本",
+    "1.1.0": "新增扩展方向和自定义提示词"
+  }
+}

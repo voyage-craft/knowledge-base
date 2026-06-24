@@ -1,0 +1,61 @@
+{
+  "id": "kb.builtin.source",
+  "name": "文档来源",
+  "version": "1.0.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "从知识库中按筛选条件获取文档作为工作流输入源",
+  "author": "Knowledge Base Team",
+  "category": "input",
+  "icon": "FolderOpen",
+  "color": "bg-emerald-500",
+  "node_type": "source",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "筛选条件",
+        "options": [
+          "all",
+          "folder",
+          "tag",
+          "status"
+        ],
+        "default": "all",
+        "key": "filter"
+      },
+      {
+        "type": "select",
+        "label": "排序方式",
+        "options": [
+          "date",
+          "title",
+          "size"
+        ],
+        "default": "date",
+        "advanced": true,
+        "key": "sort_by"
+      },
+      {
+        "type": "text",
+        "label": "数量限制",
+        "placeholder": "不限制",
+        "advanced": true,
+        "key": "limit"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "database_read"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本"
+  }
+}

@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 
-from app.services.llm_service import LLMService
+from app.services.llm_service import LLMService, LLMError, LLMNotConfiguredError, LLMProviderError
 
 
 class TestLLMServiceGenerate:
@@ -11,15 +11,15 @@ class TestLLMServiceGenerate:
 
     @pytest.mark.asyncio
     async def test_generate_no_provider_configured(self):
-        """When no API key is set, generate returns an error marker string."""
+        """When no API key is set, generate raises LLMNotConfiguredError."""
         svc = LLMService()
         with patch.object(svc, "_load_config", new_callable=AsyncMock, return_value={
             "provider": "openai", "model": "gpt-4", "openai_api_key": "",
             "openai_base_url": "", "anthropic_api_key": "", "anthropic_base_url": "",
             "ollama_base_url": "", "temperature": 0.7,
         }):
-            result = await svc.generate(messages=[{"role": "user", "content": "hello"}])
-            assert "LLM" in result or "未配置" in result
+            with pytest.raises(LLMNotConfiguredError):
+                await svc.generate(messages=[{"role": "user", "content": "hello"}])
 
     @pytest.mark.asyncio
     async def test_generate_unsupported_provider(self):
@@ -29,8 +29,8 @@ class TestLLMServiceGenerate:
             "openai_base_url": "", "anthropic_api_key": "", "anthropic_base_url": "",
             "ollama_base_url": "", "temperature": 0.7,
         }):
-            result = await svc.generate(messages=[{"role": "user", "content": "hello"}])
-            assert "不支持" in result or "LLM" in result
+            with pytest.raises(LLMError):
+                await svc.generate(messages=[{"role": "user", "content": "hello"}])
 
     @pytest.mark.asyncio
     async def test_generate_openai_success(self):
@@ -78,7 +78,7 @@ class TestLLMServiceGenerate:
 
     @pytest.mark.asyncio
     async def test_generate_api_exception(self):
-        """API errors should be caught and returned as error string, not raised."""
+        """API errors should be raised as LLMProviderError."""
         svc = LLMService()
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(side_effect=Exception("Rate limit exceeded"))
@@ -89,8 +89,8 @@ class TestLLMServiceGenerate:
             "ollama_base_url": "", "temperature": 0.7,
         }):
             with patch.object(svc, "_get_client", new_callable=AsyncMock, return_value=mock_client):
-                result = await svc.generate(messages=[{"role": "user", "content": "hello"}])
-                assert "错误" in result or "LLM" in result
+                with pytest.raises(LLMProviderError):
+                    await svc.generate(messages=[{"role": "user", "content": "hello"}])
 
     @pytest.mark.asyncio
     async def test_generate_ollama_uses_openai_client(self):
@@ -154,11 +154,9 @@ class TestLLMServiceStream:
             "openai_base_url": "", "anthropic_api_key": "", "anthropic_base_url": "",
             "ollama_base_url": "", "temperature": 0.7,
         }):
-            tokens = []
-            async for token in svc.stream(messages=[{"role": "user", "content": "hi"}]):
-                tokens.append(token)
-            assert len(tokens) == 1
-            assert "未配置" in tokens[0]
+            with pytest.raises(LLMNotConfiguredError):
+                async for token in svc.stream(messages=[{"role": "user", "content": "hi"}]):
+                    pass  # Should not reach here — exception raised before first yield
 
 
 class TestLLMServiceClose:

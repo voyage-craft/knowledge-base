@@ -1,0 +1,58 @@
+{
+  "id": "kb.builtin.condition",
+  "name": "条件分支",
+  "version": "1.0.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "根据条件判断结果将工作流引导至不同的分支路径",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "Sparkles",
+  "color": "bg-yellow-500",
+  "node_type": "condition",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "text",
+        "label": "检查字段",
+        "placeholder": "检查字段名",
+        "key": "field"
+      },
+      {
+        "type": "select",
+        "label": "运算符",
+        "options": [
+          "eq",
+          "neq",
+          "gt",
+          "gte",
+          "lt",
+          "lte",
+          "contains",
+          "not_contains",
+          "is_empty",
+          "is_not_empty"
+        ],
+        "default": "eq",
+        "key": "operator"
+      },
+      {
+        "type": "text",
+        "label": "比较值",
+        "placeholder": "比较值",
+        "key": "value"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [],
+  "changelog": {
+    "1.0.0": "初始版本"
+  }
+}

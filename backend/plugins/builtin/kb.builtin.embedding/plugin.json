@@ -1,0 +1,41 @@
+{
+  "id": "kb.builtin.embedding",
+  "name": "生成嵌入",
+  "version": "1.0.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "为文档内容生成向量嵌入以支持语义搜索",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "Sparkles",
+  "color": "bg-teal-600",
+  "node_type": "embedding",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "强制重建",
+        "options": [
+          "true",
+          "false"
+        ],
+        "default": "false",
+        "key": "force_rebuild"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "llm_access",
+    "database_write"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本"
+  }
+}

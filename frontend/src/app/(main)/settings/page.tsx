@@ -1,14 +1,28 @@
 "use client"
 
 import { useState } from "react"
+import dynamic from "next/dynamic"
 import { useUser } from "@/lib/user-context"
 import { AccountTab } from "@/components/settings/AccountTab"
-import { SystemTab } from "@/components/settings/SystemTab"
-import { UsersTab } from "@/components/settings/UsersTab"
-import { PromptTab } from "@/components/settings/PromptTab"
-import { RAGTab } from "@/components/settings/RAGTab"
-import { ApiRoutesTab } from "@/components/settings/ApiRoutesTab"
-import { User, Server, Users, MessageSquareText, Database, Route } from "lucide-react"
+import { User, Server, Users, MessageSquareText, Database, Route, Puzzle } from "lucide-react"
+
+// Loading skeleton shown while admin tab chunks load
+function TabLoading() {
+  return (
+    <div className="animate-pulse space-y-4 py-4">
+      <div className="h-4 w-40 bg-slate-200 dark:bg-slate-800 rounded" />
+      <div className="h-24 bg-slate-100 dark:bg-slate-900 rounded-lg" />
+      <div className="h-4 w-64 bg-slate-200 dark:bg-slate-800 rounded" />
+    </div>
+  )
+}
+
+const SystemTab = dynamic(() => import("@/components/settings/SystemTab").then(m => ({ default: m.SystemTab })), { ssr: false, loading: TabLoading })
+const PromptTab = dynamic(() => import("@/components/settings/PromptTab").then(m => ({ default: m.PromptTab })), { ssr: false, loading: TabLoading })
+const RAGTab = dynamic(() => import("@/components/settings/RAGTab").then(m => ({ default: m.RAGTab })), { ssr: false, loading: TabLoading })
+const ApiRoutesTab = dynamic(() => import("@/components/settings/ApiRoutesTab").then(m => ({ default: m.ApiRoutesTab })), { ssr: false, loading: TabLoading })
+const UsersTab = dynamic(() => import("@/components/settings/UsersTab").then(m => ({ default: m.UsersTab })), { ssr: false, loading: TabLoading })
+const PluginsTab = dynamic(() => import("@/components/settings/PluginsTab").then(m => ({ default: m.PluginsTab })), { ssr: false, loading: TabLoading })
 
 const TABS: { id: string; label: string; icon: typeof User; adminOnly?: boolean }[] = [
   { id: "account", label: "账户", icon: User },
@@ -17,6 +31,7 @@ const TABS: { id: string; label: string; icon: typeof User; adminOnly?: boolean 
   { id: "rag", label: "RAG 检索", icon: Database, adminOnly: true },
   { id: "api-routes", label: "API 路由", icon: Route, adminOnly: true },
   { id: "users", label: "用户管理", icon: Users, adminOnly: true },
+  { id: "plugins", label: "插件管理", icon: Puzzle, adminOnly: true },
 ]
 
 export default function SettingsPage() {
@@ -59,6 +74,7 @@ export default function SettingsPage() {
           {activeTab === "rag" && user.is_admin && <RAGTab />}
           {activeTab === "api-routes" && user.is_admin && <ApiRoutesTab />}
           {activeTab === "users" && user.is_admin && <UsersTab />}
+          {activeTab === "plugins" && user.is_admin && <PluginsTab />}
         </div>
       </div>
     </>

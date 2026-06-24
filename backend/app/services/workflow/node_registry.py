@@ -71,13 +71,17 @@ class NodeProcessor:
 class NodeProcessorRegistry:
     """Registry of node type processors.
 
-    Register new node types using the @register decorator:
+    Register new node types using the @register decorator or direct call:
         @NodeProcessorRegistry.register("my_type")
         class MyProcessor(NodeProcessor):
             ...
+
+        # Or from plugin loader:
+        NodeProcessorRegistry.register("my_type")(MyProcessor)
     """
 
     _processors: dict[str, type[NodeProcessor]] = {}
+    _metadata: dict[str, dict] = {}  # node_type -> {plugin_id, version, ...}
 
     @classmethod
     def register(cls, node_type: str):
@@ -98,14 +102,41 @@ class NodeProcessorRegistry:
         return decorator
 
     @classmethod
+    def register_with_metadata(
+        cls,
+        node_type: str,
+        processor_cls: type[NodeProcessor],
+        plugin_id: str = "",
+        version: str = "",
+        is_builtin: bool = False,
+    ) -> None:
+        """Register a processor with plugin metadata (used by plugin_loader)."""
+        cls._processors[node_type] = processor_cls
+        cls._metadata[node_type] = {
+            "plugin_id": plugin_id,
+            "version": version,
+            "is_builtin": is_builtin,
+        }
+        logger.debug(
+            "Registered processor '%s' for type '%s' (plugin: %s v%s)",
+            processor_cls.__name__, node_type, plugin_id, version,
+        )
+
+    @classmethod
+    def unregister(cls, node_type: str) -> bool:
+        """Remove a processor registration. Returns True if it existed."""
+        removed = cls._processors.pop(node_type, None) is not None
+        cls._metadata.pop(node_type, None)
+        return removed
+
+    @classmethod
+    def get_metadata(cls, node_type: str) -> dict:
+        """Get plugin metadata for a registered node type."""
+        return cls._metadata.get(node_type, {})
+
+    @classmethod
     def get(cls, node_type: str) -> type[NodeProcessor]:
         """Get a processor class by node type.
-
-        Args:
-            node_type: The node type string
-
-        Returns:
-            Processor class
 
         Raises:
             ValueError: If node type is not registered
@@ -128,3 +159,4 @@ class NodeProcessorRegistry:
     def clear(cls):
         """Clear all registered processors (for testing)."""
         cls._processors.clear()
+        cls._metadata.clear()

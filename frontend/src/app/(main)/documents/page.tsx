@@ -13,7 +13,7 @@ import { DocumentListSkeleton } from "@/components/skeletons/DocumentListSkeleto
 import {
   FileText, Plus, Search, FolderOpen, Trash2, Edit3,
   MoreVertical, Tag, CheckSquare, Square, Move, Download,
-  Upload,
+  Upload, Eye,
 } from "lucide-react"
 import { toast } from "sonner"
 import { apiTry, apiFetchBlob } from "@/lib/api-client"
@@ -51,7 +51,7 @@ const STATUS_LABELS: Record<string, string> = {
 // ── Memoized DocumentCard ────────────────────────
 
 const DocumentCard = memo(function DocumentCard({
-  doc, batchMode, isSelected, onToggleSelect, onOpen, onChangeStatus,
+  doc, batchMode, isSelected, onToggleSelect, onOpen, onEdit, onChangeStatus,
   onExport, onDelete,
 }: {
   doc: Document
@@ -59,6 +59,7 @@ const DocumentCard = memo(function DocumentCard({
   isSelected: boolean
   onToggleSelect: (id: number) => void
   onOpen: (id: number) => void
+  onEdit: (id: number) => void
   onChangeStatus: (id: number, status: string) => void
   onExport: (id: number, format: string) => void
   onDelete: (id: number) => void
@@ -128,6 +129,9 @@ const DocumentCard = memo(function DocumentCard({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={() => onOpen(doc.id)}>
+              <Eye className="h-4 w-4 mr-2" /> 预览
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onEdit(doc.id)}>
               <Edit3 className="h-4 w-4 mr-2" /> 编辑
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => onChangeStatus(doc.id, doc.status === "published" ? "draft" : "published")}>
@@ -200,9 +204,19 @@ export default function DocumentsPage() {
     if (data) setTags(data)
   }, [])
 
+  // Keep latest filter values in a ref so fetchDocuments doesn't depend on them
+  const filtersRef = useRef({ debouncedSearch, folderId, statusFilter, tagFilter })
+  filtersRef.current = { debouncedSearch, folderId, statusFilter, tagFilter }
+
+  // Skip flag to prevent double-fetch when filter change also resets page
+  const skipNextFetch = useRef(false)
+
   // Fetch documents
-  const fetchDocuments = useCallback(async () => {
-    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE) })
+  const fetchDocuments = useCallback(async (overridePage?: number) => {
+    setLoading(true)
+    const currentPage = overridePage ?? page
+    const { debouncedSearch, folderId, statusFilter, tagFilter } = filtersRef.current
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(currentPage * PAGE_SIZE) })
     if (debouncedSearch) params.set("search", debouncedSearch)
     if (folderId !== null) params.set("folder_id", String(folderId))
     if (statusFilter) params.set("status", statusFilter)
@@ -212,16 +226,32 @@ export default function DocumentsPage() {
     if (data) {
       setDocuments(data.documents || [])
       setTotal(data.total || 0)
+    } else {
+      toast.error(err?.message || "加载失败")
+      setDocuments([])
     }
     setLoading(false)
-  }, [debouncedSearch, folderId, statusFilter, tagFilter, page])
+  }, [page])
 
-  useEffect(() => { fetchDocuments() }, [fetchDocuments])
+  useEffect(() => {
+    if (skipNextFetch.current) {
+      skipNextFetch.current = false
+      return
+    }
+    fetchDocuments()
+  }, [fetchDocuments])
   useEffect(() => { fetchFolders() }, [fetchFolders])
   useEffect(() => { fetchTags() }, [fetchTags])
 
-  // Reset page when filters change
-  useEffect(() => { setPage(0) }, [debouncedSearch, folderId, statusFilter, tagFilter])
+  // Reset page AND fetch when filters change (single fetch, no race condition)
+  useEffect(() => {
+    if (page !== 0) {
+      setPage(0)
+      skipNextFetch.current = true
+    }
+    fetchDocuments(0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch, folderId, statusFilter, tagFilter])
 
   // ── Document operations (stable callbacks) ─────
 
@@ -290,6 +320,10 @@ export default function DocumentsPage() {
   }, [fetchDocuments])
 
   const openDocument = useCallback((id: number) => {
+    router.push(`/documents/${id}`)
+  }, [router])
+
+  const editDocument = useCallback((id: number) => {
     router.push(`/editor/${id}`)
   }, [router])
 
@@ -528,6 +562,7 @@ export default function DocumentsPage() {
                   isSelected={selectedIds.has(doc.id)}
                   onToggleSelect={toggleSelect}
                   onOpen={openDocument}
+                  onEdit={editDocument}
                   onChangeStatus={changeStatus}
                   onExport={exportDocument}
                   onDelete={deleteDocument}

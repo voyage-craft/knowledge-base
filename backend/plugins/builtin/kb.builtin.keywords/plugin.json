@@ -1,0 +1,53 @@
+{
+  "id": "kb.builtin.keywords",
+  "name": "提取关键词",
+  "version": "1.1.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "使用 AI 从文档内容中提取关键词和短语",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "Key",
+  "color": "bg-cyan-500",
+  "node_type": "keywords",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "最大关键词数",
+        "options": [
+          "5",
+          "10",
+          "15",
+          "20"
+        ],
+        "default": "10",
+        "key": "max_keywords"
+      },
+      {
+        "type": "select",
+        "label": "包含短语",
+        "options": [
+          "true",
+          "false"
+        ],
+        "default": "true",
+        "key": "include_phrases"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "llm_access"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本",
+    "1.1.0": "新增短语提取选项"
+  }
+}

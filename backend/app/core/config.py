@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_AI: str = "10/minute"
     ADMIN_INITIAL_PASSWORD: str = ""  # If empty, generates random password
     CORS_ORIGINS: str = "http://localhost:3000"  # Comma-separated origins
+    INTERNAL_API_SECRET: str = ""  # Required for server-to-server API calls
 
     @field_validator("JWT_SECRET_KEY")
     @classmethod

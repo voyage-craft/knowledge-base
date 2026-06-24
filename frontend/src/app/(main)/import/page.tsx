@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react"
 import { apiTry, apiFetch } from "@/lib/api-client"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import {
   Upload, FileText, Check, X, AlertTriangle, Loader2,
@@ -72,8 +73,8 @@ export default function ImportPage() {
       })
       setBatch(res)
       setSelectedFiles(new Set())
-    } catch (e) {
-      // Error handled by apiFetch
+    } catch (e: any) {
+      toast.error(e?.message || "上传失败，请重试")
     }
     setUploading(false)
   }
@@ -81,10 +82,19 @@ export default function ImportPage() {
   async function handleAnalyze() {
     if (!batch) return
     setAnalyzing(true)
+    toast.info("开始 AI 分析，正在并发处理文档...")
+
     const [res, err] = await apiTry<ImportBatch>(`/api/import/batch/${batch.id}/analyze`, {
       method: "POST",
     })
-    if (res) setBatch(res)
+    if (res) {
+      setBatch(res)
+      const readyCount = res.files?.filter((f: any) => f.status === "ready").length || 0
+      const errorCount = res.files?.filter((f: any) => f.status === "error").length || 0
+      toast.success(`分析完成：${readyCount} 个成功，${errorCount} 个失败`)
+    } else {
+      toast.error(err?.message || "分析失败")
+    }
     setAnalyzing(false)
   }
 
@@ -99,6 +109,14 @@ export default function ImportPage() {
     if (res) {
       setBatch(res)
       setSelectedFiles(new Set())
+      const importedCount = res.files?.filter((f: any) => f.status === "imported").length || selectedFiles.size
+      toast.success(`成功导入 ${importedCount} 个文档`)
+      // Offer to navigate to documents page
+      if (confirm(`已导入 ${importedCount} 个文档。是否跳转到知识库查看？`)) {
+        window.location.href = "/documents"
+      }
+    } else {
+      toast.error(err?.message || "导入失败")
     }
     setImporting(false)
   }
@@ -122,6 +140,8 @@ export default function ImportPage() {
         next.delete(fileId)
         return next
       })
+    } else {
+      toast.error(err?.message || "拒绝失败")
     }
   }
 

@@ -1,6 +1,7 @@
 """MCP tool: Read documents and browse folders/tags."""
 
 from app.mcp.server import mcp
+from app.mcp.auth_context import require_user_id
 from app.core.database import AsyncSessionLocal
 from app.models.document import Document, Tag, document_tags, Folder
 from sqlalchemy import select
@@ -9,8 +10,11 @@ from sqlalchemy import select
 @mcp.tool()
 async def read_document(document_id: int) -> dict:
     """Read a document by ID. Returns title, plain text content, tags, folder, and status."""
+    user_id = require_user_id()
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(Document).where(Document.id == document_id))
+        result = await session.execute(
+            select(Document).where(Document.id == document_id, Document.user_id == user_id)
+        )
         doc = result.scalar_one_or_none()
         if not doc:
             return {"error": {"code": "NOT_FOUND", "message": f"Document {document_id} not found"}}
@@ -43,9 +47,10 @@ async def list_documents(
 ) -> dict:
     """List documents with optional filters. Returns document summaries."""
     limit = max(1, min(limit, 100))
+    user_id = require_user_id()
 
     async with AsyncSessionLocal() as session:
-        query = select(Document).distinct()
+        query = select(Document).where(Document.user_id == user_id).distinct()
         if folder_id is not None:
             query = query.where(Document.folder_id == folder_id)
         if status:
@@ -78,8 +83,17 @@ async def list_documents(
 async def get_document_versions(document_id: int) -> dict:
     """List version history of a document."""
     from app.models.document import DocumentVersion
+    user_id = require_user_id()
 
     async with AsyncSessionLocal() as session:
+        # Verify ownership before exposing version history
+        owner = await session.execute(
+            select(Document.user_id).where(Document.id == document_id)
+        )
+        owner_row = owner.first()
+        if not owner_row or owner_row[0] != user_id:
+            return {"error": {"code": "NOT_FOUND", "message": f"Document {document_id} not found"}}
+
         result = await session.execute(
             select(DocumentVersion)
             .where(DocumentVersion.document_id == document_id)
@@ -103,8 +117,11 @@ async def get_document_versions(document_id: int) -> dict:
 @mcp.tool()
 async def get_folder_tree() -> dict:
     """Get hierarchical folder structure as a tree."""
+    user_id = require_user_id()
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(Folder).order_by(Folder.name))
+        result = await session.execute(
+            select(Folder).where(Folder.user_id == user_id).order_by(Folder.name)
+        )
         folders = result.scalars().all()
 
         # Build tree
@@ -121,11 +138,11 @@ async def get_folder_tree() -> dict:
             else:
                 roots.append(node)
 
-        # Count documents per folder
+        # Count documents per folder (scoped to this user)
         from sqlalchemy import func
         doc_counts = await session.execute(
             select(Document.folder_id, func.count(Document.id))
-            .where(Document.folder_id.isnot(None))
+            .where(Document.folder_id.isnot(None), Document.user_id == user_id)
             .group_by(Document.folder_id)
         )
         counts = {row[0]: row[1] for row in doc_counts.fetchall()}

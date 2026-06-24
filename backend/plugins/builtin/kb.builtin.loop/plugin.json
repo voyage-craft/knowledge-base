@@ -1,0 +1,45 @@
+{
+  "id": "kb.builtin.loop",
+  "name": "循环处理",
+  "version": "1.0.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "对集合中的每个元素重复执行后续工作流节点",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "Sparkles",
+  "color": "bg-sky-500",
+  "node_type": "loop",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "循环集合",
+        "options": [
+          "documents",
+          "keywords",
+          "summaries"
+        ],
+        "default": "documents",
+        "key": "items_field"
+      },
+      {
+        "type": "text",
+        "label": "最大迭代次数",
+        "default": "50",
+        "key": "max_iterations"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [],
+  "changelog": {
+    "1.0.0": "初始版本"
+  }
+}

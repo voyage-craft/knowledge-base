@@ -18,6 +18,17 @@ from app.services.workflow.node_registry import NodeProcessorRegistry, NodeProce
 logger = logging.getLogger(__name__)
 
 
+def _resolve_field(data: dict, field_path: str):
+    """Resolve dot-separated field paths like 'quality.score'."""
+    current = data
+    for key in field_path.split("."):
+        if isinstance(current, dict):
+            current = current.get(key)
+        else:
+            return None
+    return current
+
+
 @NodeProcessorRegistry.register("condition")
 class ConditionProcessor(NodeProcessor):
     """Evaluate a condition and return branch target."""
@@ -34,8 +45,8 @@ class ConditionProcessor(NodeProcessor):
         if not field:
             return NodeResult(error="条件节点缺少field配置")
 
-        # Get field value from accumulated data
-        actual_value = context.accumulated_data.get(field)
+        # Get field value from accumulated data (supports dot-path like 'quality.score')
+        actual_value = _resolve_field(context.accumulated_data, field)
 
         # Evaluate condition
         result = self._evaluate(actual_value, operator, expected_value)

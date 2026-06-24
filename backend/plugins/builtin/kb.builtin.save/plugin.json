@@ -1,0 +1,59 @@
+{
+  "id": "kb.builtin.save",
+  "name": "保存文档",
+  "version": "1.1.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "将工作流处理后的文档内容保存回知识库",
+  "author": "Knowledge Base Team",
+  "category": "output",
+  "icon": "Save",
+  "color": "bg-green-500",
+  "node_type": "save",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "保存模式",
+        "options": [
+          "overwrite",
+          "new"
+        ],
+        "default": "overwrite",
+        "key": "mode"
+      },
+      {
+        "type": "select",
+        "label": "覆盖前备份",
+        "options": [
+          "true",
+          "false"
+        ],
+        "default": "true",
+        "advanced": true,
+        "key": "backup_before_overwrite"
+      },
+      {
+        "type": "text",
+        "label": "版本备注",
+        "placeholder": "版本备注",
+        "advanced": true,
+        "key": "version_note"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "database_write"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本",
+    "1.1.0": "新增覆盖前备份和版本备注"
+  }
+}

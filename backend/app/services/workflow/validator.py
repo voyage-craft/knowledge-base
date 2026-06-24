@@ -59,8 +59,10 @@ def validate_workflow_config(config_json: dict) -> list[str]:
         node_errors = _validate_node(node, i)
         errors.extend(node_errors)
 
-        # Check for duplicate node IDs
+        # Check for duplicate node IDs (skip nodes missing/invalid id — _validate_node already reported)
         node_id = node.get("id")
+        if not isinstance(node_id, str) or not node_id.strip():
+            continue
         if node_id in node_ids:
             errors.append(f"节点ID重复: {node_id}")
         node_ids.add(node_id)
@@ -83,11 +85,52 @@ def validate_workflow_config(config_json: dict) -> list[str]:
     if not has_source:
         errors.append("工作流必须有一个source类型的节点")
 
+    # Detect cycles (multi-node loops) via Kahn's algorithm
+    cycle_errors = _detect_cycles(nodes, edges)
+    errors.extend(cycle_errors)
+
     # Validate specific node configurations
     for node in nodes:
         config_errors = _validate_node_config(node)
         errors.extend(config_errors)
 
+    return errors
+
+
+def _detect_cycles(nodes: list[dict], edges: list[dict]) -> list[str]:
+    """Detect multi-node cycles using Kahn's topological sort.
+
+    A self-loop is already caught by _validate_edge; this catches longer
+    cycles like A→B→C→A. Returns a list of error messages.
+    """
+    errors: list[str] = []
+    node_ids = [n.get("id") for n in nodes if isinstance(n.get("id"), str) and n["id"].strip()]
+    node_id_set = set(node_ids)
+
+    # Compute in-degree; ignore edges with unknown endpoints (reported elsewhere)
+    in_degree: dict[str, int] = {nid: 0 for nid in node_ids}
+    adj: dict[str, list[str]] = {nid: [] for nid in node_ids}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        src, tgt = edge.get("source"), edge.get("target")
+        if src in node_id_set and tgt in node_id_set and src != tgt:
+            adj[src].append(tgt)
+            in_degree[tgt] += 1
+
+    # Kahn's algorithm
+    queue = [nid for nid, deg in in_degree.items() if deg == 0]
+    visited_count = 0
+    while queue:
+        current = queue.pop()
+        visited_count += 1
+        for nxt in adj[current]:
+            in_degree[nxt] -= 1
+            if in_degree[nxt] == 0:
+                queue.append(nxt)
+
+    if visited_count != len(node_ids):
+        errors.append("工作流存在环路，无法确定执行顺序")
     return errors
 
 

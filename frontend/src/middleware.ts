@@ -1,12 +1,38 @@
 import { NextRequest, NextResponse } from "next/server"
 import { verifyToken } from "@/lib/auth"
 
-const protectedRoutes = ["/editor", "/documents", "/chat", "/settings", "/graph", "/import", "/workflows"]
+const protectedRoutes = ["/editor", "/documents", "/chat", "/settings", "/graph", "/import", "/workflows", "/prompts"]
 const authRoutes = ["/login"]
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000"
 
+// Rate limiting for token refresh attempts
+const refreshAttempts = new Map<string, { count: number; lastAttempt: number }>()
+const MAX_REFRESH_ATTEMPTS = 5
+const REFRESH_WINDOW_MS = 60000 // 1 minute
+
 async function tryRefreshToken(refreshToken: string): Promise<{ access_token: string; refresh_token: string } | null> {
+  // Rate limit refresh attempts to prevent abuse
+  const now = Date.now()
+  const key = refreshToken.slice(-10) // Use last 10 chars as key
+  const attempts = refreshAttempts.get(key)
+
+  if (attempts) {
+    if (now - attempts.lastAttempt < REFRESH_WINDOW_MS && attempts.count >= MAX_REFRESH_ATTEMPTS) {
+      console.warn("Rate limit exceeded for token refresh attempts")
+      return null
+    }
+    // Reset if window has passed
+    if (now - attempts.lastAttempt >= REFRESH_WINDOW_MS) {
+      refreshAttempts.set(key, { count: 1, lastAttempt: now })
+    } else {
+      attempts.count++
+      attempts.lastAttempt = now
+    }
+  } else {
+    refreshAttempts.set(key, { count: 1, lastAttempt: now })
+  }
+
   try {
     const res = await fetch(`${BACKEND_URL}/api/auth/refresh`, {
       method: "POST",
@@ -40,15 +66,24 @@ function setAuthCookies(response: NextResponse, data: { access_token: string; re
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
+  // Skip middleware for static assets and API routes
+  if (pathname.startsWith("/_next") || pathname.startsWith("/api")) {
+    return NextResponse.next()
+  }
+
   const isProtected = protectedRoutes.some(route => pathname.startsWith(route))
   const isAuthRoute = authRoutes.some(route => pathname.startsWith(route))
 
   const token = request.cookies.get("access_token")?.value
 
+  // Protected route without token - redirect to login
   if (isProtected && !token) {
-    return NextResponse.redirect(new URL("/login", request.url))
+    const loginUrl = new URL("/login", request.url)
+    loginUrl.searchParams.set("from", pathname)
+    return NextResponse.redirect(loginUrl)
   }
 
+  // Protected route with token - verify it
   if (isProtected && token) {
     const payload = await verifyToken(token)
     if (!payload) {
@@ -71,6 +106,7 @@ export async function middleware(request: NextRequest) {
     }
   }
 
+  // Auth route with valid token - redirect to documents
   if (isAuthRoute && token) {
     const payload = await verifyToken(token)
     if (payload) {
@@ -78,7 +114,13 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  return NextResponse.next()
+  // Add security headers to response
+  const response = NextResponse.next()
+  response.headers.set("X-Content-Type-Options", "nosniff")
+  response.headers.set("X-Frame-Options", "DENY")
+  response.headers.set("X-XSS-Protection", "0")
+
+  return response
 }
 
 export const config = {

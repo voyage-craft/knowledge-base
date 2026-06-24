@@ -10,12 +10,14 @@ from app.models.user import User
 from app.models.document import Document
 from app.services.ai_pipeline import ai_pipeline
 from app.services.api_router import api_router
+from app.core.limiter import limiter
+from app.core.config import get_settings
 import json
 import logging
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/api/ai", tags=["ai"])
+settings = get_settings()
 
 @router.get("/status")
 async def ai_status(current_user: User = Depends(get_current_user_dep)):
@@ -37,7 +39,9 @@ class StandardizeResponse(BaseModel):
     metadata: dict
 
 @router.post("/standardize", response_model=StandardizeResponse)
+@limiter.limit(settings.RATE_LIMIT_AI)
 async def standardize_document(
+    request: Request,
     data: StandardizeRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_dep),
@@ -77,7 +81,9 @@ class AutoClassifyRequest(BaseModel):
     document_id: int
 
 @router.post("/auto-classify")
+@limiter.limit(settings.RATE_LIMIT_AI)
 async def auto_classify(
+    request: Request,
     data: AutoClassifyRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_dep),
@@ -104,11 +110,20 @@ async def auto_classify(
     from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
     keywords = analysis.get("keywords", [])
-    for kw in keywords[:5]:  # Max 5 auto-tags
+    auto_keywords = keywords[:5]  # Max 5 auto-tags
+    # Batch fetch existing tags to avoid N+1
+    if auto_keywords:
         tag_result = await db.execute(
-            select(Tag).where(Tag.user_id == current_user.id, Tag.name == kw)
+            select(Tag).where(
+                Tag.user_id == current_user.id,
+                Tag.name.in_(auto_keywords)
+            )
         )
-        tag = tag_result.scalar_one_or_none()
+        existing_tags = {t.name: t for t in tag_result.scalars().all()}
+    else:
+        existing_tags = {}
+    for kw in auto_keywords:
+        tag = existing_tags.get(kw)
         if not tag:
             tag = Tag(name=kw, user_id=current_user.id)
             db.add(tag)
@@ -153,7 +168,9 @@ class GenerateResponse(BaseModel):
 
 
 @router.post("/generate", response_model=GenerateResponse)
+@limiter.limit(settings.RATE_LIMIT_AI)
 async def generate_document(
+    request: Request,
     data: GenerateRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_dep),
@@ -175,9 +192,10 @@ async def generate_document(
         )
     except Exception as e:
         logger.error("Document generation failed: %s", e)
-        raise HTTPException(500, f"文档生成失败: {str(e)}")
+        raise HTTPException(500, "文档生成失败，请稍后重试")
 
     from app.services.content_converter import extract_plain_text
+    from app.models.document import Tag, document_tags
     from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
     doc = Document(
@@ -194,11 +212,16 @@ async def generate_document(
 
     # Handle tags
     if data.tags:
-        for tag_name in data.tags:
-            tag_result = await db.execute(
-                select(Tag).where(Tag.user_id == current_user.id, Tag.name == tag_name)
+        # Batch fetch existing tags to avoid N+1
+        tag_result = await db.execute(
+            select(Tag).where(
+                Tag.user_id == current_user.id,
+                Tag.name.in_(data.tags)
             )
-            tag = tag_result.scalar_one_or_none()
+        )
+        existing_tags = {t.name: t for t in tag_result.scalars().all()}
+        for tag_name in data.tags:
+            tag = existing_tags.get(tag_name)
             if not tag:
                 tag = Tag(name=tag_name, user_id=current_user.id)
                 db.add(tag)
@@ -246,8 +269,10 @@ async def endpoint_resolve(
     This is an **internal** endpoint — called only from the Next.js
     server-side route handlers. Requires X-Internal-Request header.
     """
-    import os
-    internal_secret = os.environ.get("INTERNAL_API_SECRET", "kb-internal-secret-change-me")
+    from app.core.config import get_settings
+    internal_secret = get_settings().INTERNAL_API_SECRET
+    if not internal_secret:
+        raise HTTPException(500, "INTERNAL_API_SECRET not configured")
     if request.headers.get("X-Internal-Request") != internal_secret:
         raise HTTPException(403, "This endpoint is for internal use only")
     endpoints = await api_router.resolve(data.category)
@@ -299,7 +324,9 @@ class ChatRequest(BaseModel):
 
 
 @router.post("/chat/stream")
+@limiter.limit(settings.RATE_LIMIT_AI)
 async def chat_stream(
+    request: Request,
     data: ChatRequest,
     current_user: User = Depends(get_current_user_dep),
 ):
@@ -484,7 +511,9 @@ class EditRequest(BaseModel):
 
 
 @router.post("/edit/stream")
+@limiter.limit(settings.RATE_LIMIT_AI)
 async def edit_stream(
+    request: Request,
     data: EditRequest,
     current_user: User = Depends(get_current_user_dep),
 ):

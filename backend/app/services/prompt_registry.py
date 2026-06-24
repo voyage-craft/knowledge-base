@@ -156,6 +156,28 @@ PROMPT_DEFAULTS: dict[str, dict[str, Any]] = {
             "以JSON数组格式返回，例如：[\"关键词1\", \"关键词2\"]。只返回JSON数组，不要包含其他内容。"
         ),
     },
+    # ── Workflow: Rename ──
+    "prompt_workflow_rename": {
+        "label": "文档重命名",
+        "category": "workflow",
+        "description": "根据文档内容生成更好的标题",
+        "default": (
+            "你是一个文档标题优化助手。请根据文档内容生成一个准确、简洁、信息丰富的标题。"
+            "只输出标题文本，不要包含任何解释或引号。"
+        ),
+    },
+    # ── RAG Context ──
+    "prompt_rag_search": {
+        "label": "RAG 搜索增强",
+        "category": "rag",
+        "description": "基于检索结果回答问题的系统提示",
+        "default": (
+            "以下是从用户知识库中检索到的相关文档片段，请参考这些内容回答用户的问题：\n\n{context}\n\n"
+            "回答要求：\n1. 优先基于上述文档片段回答问题\n"
+            "2. 如果文档片段不足以回答，可以结合通用知识补充，但需注明\n"
+            "3. 如果检索内容与问题不相关，忽略检索内容直接回答"
+        ),
+    },
 }
 
 

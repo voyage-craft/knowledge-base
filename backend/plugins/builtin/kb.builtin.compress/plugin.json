@@ -1,0 +1,58 @@
+{
+  "id": "kb.builtin.compress",
+  "name": "精简压缩",
+  "version": "1.1.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "使用 AI 对文档内容进行精简压缩，保留核心要点",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "Minimize2",
+  "color": "bg-purple-500",
+  "node_type": "compress",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "目标比例",
+        "options": [
+          "50%",
+          "30%",
+          "20%"
+        ],
+        "default": "50%",
+        "key": "target_ratio"
+      },
+      {
+        "type": "select",
+        "label": "保留关键要点",
+        "options": [
+          "true",
+          "false"
+        ],
+        "default": "true",
+        "key": "preserve_key_points"
+      },
+      {
+        "type": "textarea",
+        "label": "自定义提示词",
+        "advanced": true,
+        "key": "custom_prompt"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "llm_access"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本",
+    "1.1.0": "新增关键要点保留选项"
+  }
+}

@@ -2,12 +2,19 @@
 
 import { useState, useEffect, useCallback, useRef } from "react"
 import { ReactFlowProvider } from "@xyflow/react"
+import dynamic from "next/dynamic"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { WorkflowEditor } from "@/components/workflows/WorkflowEditor"
 import { OnboardingGuide, shouldShowOnboarding, resetOnboarding } from "@/components/workflows/OnboardingGuide"
 import { apiTry } from "@/lib/api-client"
+import { ProgressBanner } from "@/components/ui/progress-banner"
+
+// Lazy-load WorkflowEditor (~200KB+ with @xyflow/react) — only loaded when editor view is active
+const WorkflowEditor = dynamic(
+  () => import("@/components/workflows/WorkflowEditor").then(m => ({ default: m.WorkflowEditor })),
+  { ssr: false, loading: () => <div className="flex items-center justify-center h-full"><Loader2 className="h-6 w-6 animate-spin" /></div> }
+)
 import {
   ArrowLeft, Plus, Play, Trash2, Loader2, ChevronDown, ChevronRight,
   Workflow, Sparkles, FileText, Languages, ClipboardCheck, Expand,
@@ -178,11 +185,17 @@ export default function WorkflowsPage() {
     }
   }
 
+  const [runningRunId, setRunningRunId] = useState<number | null>(null)
+
   async function handleRunWorkflow(wfId: number) {
-    const [, err] = await apiTry("/api/workflows/execute", {
+    const [data, err] = await apiTry<{ id: number }>("/api/workflows/execute", {
       method: "POST", body: JSON.stringify({ workflow_id: wfId }),
     })
-    if (!err) { toast.success("工作流已开始执行"); fetchWorkflows() }
+    if (!err && data) {
+      toast.success("工作流已开始执行")
+      setRunningRunId(data.id)
+      fetchWorkflows()
+    }
   }
 
   // ── Trigger/Schedule ──
@@ -291,6 +304,25 @@ export default function WorkflowsPage() {
           <Button onClick={handleCreateEmpty}><Plus className="h-4 w-4 mr-1" /> 新建工作流</Button>
         </div>
       </header>
+
+      {/* Workflow execution progress */}
+      {runningRunId && (
+        <ProgressBanner
+          pollUrl={`/api/workflows/run/${runningRunId}`}
+          interval={2000}
+          steps={["准备文档", "AI 处理中", "保存结果", "完成"]}
+          onComplete={() => {
+            toast.success("工作流执行完成")
+            setRunningRunId(null)
+            fetchWorkflows()
+          }}
+          onError={(err) => {
+            toast.error(`工作流执行失败: ${err}`)
+            setRunningRunId(null)
+          }}
+          onDismiss={() => setRunningRunId(null)}
+        />
+      )}
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-4xl mx-auto space-y-8">
@@ -497,6 +529,9 @@ function WorkflowRunHistory({ workflowId, expandedRuns, runDetails, onToggle }: 
   }
 
   useEffect(() => { if (show && !loaded) loadRuns() }, [show, loaded])
+
+  // Reset loaded state when workflowId changes so runs are re-fetched
+  useEffect(() => { setLoaded(false); setRuns([]) }, [workflowId])
 
   const statusIcon = (s: string) => {
     if (s === "completed") return <CheckCircle2 className="h-3 w-3 text-green-500" />

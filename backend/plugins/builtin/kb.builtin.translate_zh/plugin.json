@@ -1,0 +1,61 @@
+{
+  "id": "kb.builtin.translate_zh",
+  "name": "翻译为中文",
+  "version": "1.1.0",
+  "min_system_version": "0.2.0",
+  "max_system_version": "1.x",
+  "description": "使用 AI 将文档内容翻译为中文",
+  "author": "Knowledge Base Team",
+  "category": "process",
+  "icon": "Languages",
+  "color": "bg-pink-500",
+  "node_type": "translate_zh",
+  "entry": "processor.py",
+  "configurable": true,
+  "config_schema": {
+    "fields": [
+      {
+        "type": "select",
+        "label": "正式程度",
+        "options": [
+          "formal",
+          "neutral",
+          "informal"
+        ],
+        "default": "neutral",
+        "key": "formality"
+      },
+      {
+        "type": "select",
+        "label": "领域",
+        "options": [
+          "general",
+          "technical",
+          "legal",
+          "medical"
+        ],
+        "default": "general",
+        "key": "domain"
+      },
+      {
+        "type": "textarea",
+        "label": "自定义术语表",
+        "placeholder": "自定义术语表（每行: 原文=译文）",
+        "advanced": true,
+        "key": "glossary"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": [
+      ">=3.11"
+    ]
+  },
+  "permissions": [
+    "llm_access"
+  ],
+  "changelog": {
+    "1.0.0": "初始版本",
+    "1.1.0": "新增领域选择和自定义术语表"
+  }
+}

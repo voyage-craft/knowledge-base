@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, JSON, Table, Index
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, JSON, Table, Index, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -7,6 +7,9 @@ class Document(Base):
     __tablename__ = "documents"
     __table_args__ = (
         Index("ix_documents_user_status", "user_id", "status"),
+        Index("ix_documents_user_updated", "user_id", "updated_at"),
+        Index("ix_documents_folder_status", "folder_id", "status"),
+        Index("ix_documents_user_folder", "user_id", "folder_id"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -44,16 +47,17 @@ class Folder(Base):
     name = Column(String(200), nullable=False)
     parent_id = Column(Integer, ForeignKey("folders.id"), nullable=True)
     position = Column(Integer, default=0)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class Tag(Base):
     __tablename__ = "tags"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_user_tag_name"),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)
     color = Column(String(7), default="#3B82F6")  # hex color
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
 
     documents = relationship("Document", secondary="document_tags", back_populates="tags", lazy="selectin")
 
@@ -61,5 +65,5 @@ class Tag(Base):
 document_tags = Table(
     "document_tags", Base.metadata,
     Column("document_id", Integer, ForeignKey("documents.id"), primary_key=True),
-    Column("tag_id", Integer, ForeignKey("tags.id"), primary_key=True),
+    Column("tag_id", Integer, ForeignKey("tags.id"), primary_key=True, index=True),
 )

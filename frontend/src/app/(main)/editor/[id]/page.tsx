@@ -2,18 +2,7 @@
 
 import { useEffect, useCallback, useRef, useState, memo } from "react"
 import { useParams, useRouter } from "next/navigation"
-import { useEditor, EditorContent } from "@tiptap/react"
-import StarterKit from "@tiptap/starter-kit"
-import Placeholder from "@tiptap/extension-placeholder"
-import Underline from "@tiptap/extension-underline"
-import Highlight from "@tiptap/extension-highlight"
-import TaskList from "@tiptap/extension-task-list"
-import TaskItem from "@tiptap/extension-task-item"
-import TextAlign from "@tiptap/extension-text-align"
-import Mathematics from "@tiptap/extension-mathematics"
-import CharacterCount from "@tiptap/extension-character-count"
-import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight"
-import { common, createLowlight } from "lowlight"
+import { EditorContent } from "@tiptap/react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import {
@@ -31,8 +20,7 @@ import { toast } from "sonner"
 import { VersionHistory } from "@/components/editor/VersionHistory"
 import { StandardizePanel } from "@/components/editor/StandardizePanel"
 import { apiTry, apiFetchBlob } from "@/lib/api-client"
-
-const lowlight = createLowlight(common)
+import { useKnowledgeEditor } from "@/lib/use-knowledge-editor"
 
 const ToolbarButton = memo(function ToolbarButton({
   onClick, isActive, children, title,
@@ -60,28 +48,29 @@ export default function EditorPage() {
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved")
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const saveFnRef = useRef<() => void>(() => {})
+  const isLoadingRef = useRef(false) // Guard: suppress onUpdate during setContent
+  const lastSavedRef = useRef<{ title: string; content: string }>({ title: "", content: "" }) // Track last saved state
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false)
   const [standardizeOpen, setStandardizeOpen] = useState(false)
 
-  const editor = useEditor({
-    extensions: [
-      StarterKit.configure({ codeBlock: false }),
-      Placeholder.configure({ placeholder: "开始写作，或输入 / 使用命令..." }),
-      Underline,
-      Highlight.configure({ multicolor: true }),
-      TaskList,
-      TaskItem.configure({ nested: true }),
-      TextAlign.configure({ types: ["heading", "paragraph"] }),
-      Mathematics,
-      CharacterCount,
-      CodeBlockLowlight.configure({ lowlight }),
-    ],
-    editorProps: {
-      attributes: {
-        class: "prose prose-sm sm:prose lg:prose-lg xl:prose-xl max-w-none focus:outline-none min-h-[600px] px-8 py-6",
-      },
-    },
-    onUpdate: () => {
+  const editor = useKnowledgeEditor({
+    placeholder: "开始写作，或输入 / 使用命令...",
+    onUpdate: (ed) => {
+      // Suppress saves during programmatic setContent (initial load)
+      if (isLoadingRef.current) return
+
+      // Check if content actually changed from last saved state
+      const currentContent = JSON.stringify(ed.getJSON())
+      if (currentContent === lastSavedRef.current.content) {
+        // Content reverted to last saved state (e.g., undo) — no save needed
+        setSaveStatus("saved")
+        if (saveTimeoutRef.current) {
+          clearTimeout(saveTimeoutRef.current)
+          saveTimeoutRef.current = null
+        }
+        return
+      }
+
       setSaveStatus("unsaved")
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
       saveTimeoutRef.current = setTimeout(() => saveFnRef.current(), 1500)
@@ -90,15 +79,30 @@ export default function EditorPage() {
 
   const saveDocument = useCallback(async () => {
     if (!editor) return
+
+    const currentContent = JSON.stringify(editor.getJSON())
+    const currentTitle = title
+
+    // Skip save if nothing changed
+    if (currentTitle === lastSavedRef.current.title && currentContent === lastSavedRef.current.content) {
+      setSaveStatus("saved")
+      return
+    }
+
     setSaveStatus("saving")
     const [, err] = await apiTry(`/api/documents/${docId}`, {
       method: "PUT",
-      body: JSON.stringify({ title, content_json: editor.getJSON() }),
+      body: JSON.stringify({ title: currentTitle, content_json: editor.getJSON() }),
     })
-    setSaveStatus(err ? "unsaved" : "saved")
+    if (!err) {
+      lastSavedRef.current = { title: currentTitle, content: currentContent }
+      setSaveStatus("saved")
+    } else {
+      setSaveStatus("unsaved")
+    }
   }, [editor, docId, title])
 
-  async function runAIOperation(operation: string) {
+  const runAIOperation = useCallback(async (operation: string) => {
     if (!editor) return
     const selectedText = editor.state.doc.textBetween(
       editor.state.selection.from,
@@ -119,7 +123,15 @@ export default function EditorPage() {
 
     const context = selectedText ? "User has selected specific text to edit." : "Edit the entire document text."
 
-    toast.info("AI 处理中...")
+    const operationLabels: Record<string, string> = {
+      polish: "正在润色文本...",
+      expand: "正在扩展内容...",
+      compress: "正在压缩文本...",
+      translate_zh: "正在翻译为中文...",
+      translate_en: "正在翻译为英文...",
+      fix: "正在修正语法...",
+    }
+    toast.info(operationLabels[operation] || "AI 处理中...")
 
     try {
       const res = await fetch("/api/ai/edit", {
@@ -159,11 +171,11 @@ export default function EditorPage() {
     } catch {
       toast.error("AI 操作失败")
     }
-  }
+  }, [editor])
 
   useEffect(() => { saveFnRef.current = saveDocument }, [saveDocument])
 
-  // Flush pending save on unmount + warn on browser close
+  // Warn on browser close when unsaved
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (saveStatus === "unsaved") {
@@ -172,16 +184,20 @@ export default function EditorPage() {
       }
     }
     window.addEventListener("beforeunload", handleBeforeUnload)
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload)
+  }, [saveStatus])
 
+  // Flush pending save on unmount ONLY (empty deps = runs cleanup once on unmount)
+  useEffect(() => {
     return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload)
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current)
-        // Flush pending save immediately (fire-and-forget)
+        saveTimeoutRef.current = null
+        // Fire-and-forget save on unmount
         saveFnRef.current()
       }
     }
-  }, [saveStatus])
+  }, [])
 
   useEffect(() => {
     async function loadDocument() {
@@ -198,7 +214,15 @@ export default function EditorPage() {
             return
           }
         }
+        // Suppress onUpdate during setContent to prevent unnecessary save
+        isLoadingRef.current = true
         editor?.commands.setContent(content as object)
+        isLoadingRef.current = false
+      }
+      // Record initial state as "last saved" to prevent unnecessary saves
+      lastSavedRef.current = {
+        title: doc.title || "无标题",
+        content: JSON.stringify(editor?.getJSON() || {}),
       }
       setSaveStatus("saved")
     }
@@ -216,7 +240,7 @@ export default function EditorPage() {
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [])
 
-  async function handleExport(format: string) {
+  const handleExport = useCallback(async (format: string) => {
     try {
       const { blob } = await apiFetchBlob(`/api/documents/${docId}/export?format=${format}`)
       const url = URL.createObjectURL(blob)
@@ -229,15 +253,44 @@ export default function EditorPage() {
     } catch {
       toast.error("导出失败")
     }
-  }
+  }, [docId, title])
 
-  function handleVersionRestore(contentJson: unknown) {
+  const handleVersionRestore = useCallback((contentJson: unknown) => {
     if (!editor || !contentJson) return
     if (!confirm("确定要恢复到此版本吗？当前内容将被替换。")) return
+    // Suppress onUpdate during setContent to prevent redundant save
+    isLoadingRef.current = true
     editor.commands.setContent(contentJson as object)
+    isLoadingRef.current = false
     setSaveStatus("unsaved")
+    // Save immediately with the restored content
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current)
+      saveTimeoutRef.current = null
+    }
     saveFnRef.current()
-  }
+  }, [editor])
+
+  // Stable toolbar callbacks to preserve ToolbarButton memoization
+  const toggleBold = useCallback(() => editor?.chain().focus().toggleBold().run(), [editor])
+  const toggleItalic = useCallback(() => editor?.chain().focus().toggleItalic().run(), [editor])
+  const toggleUnderline = useCallback(() => editor?.chain().focus().toggleUnderline().run(), [editor])
+  const toggleStrike = useCallback(() => editor?.chain().focus().toggleStrike().run(), [editor])
+  const toggleCode = useCallback(() => editor?.chain().focus().toggleCode().run(), [editor])
+  const toggleHighlight = useCallback(() => editor?.chain().focus().toggleHighlight().run(), [editor])
+  const toggleHeading1 = useCallback(() => editor?.chain().focus().toggleHeading({ level: 1 }).run(), [editor])
+  const toggleHeading2 = useCallback(() => editor?.chain().focus().toggleHeading({ level: 2 }).run(), [editor])
+  const toggleHeading3 = useCallback(() => editor?.chain().focus().toggleHeading({ level: 3 }).run(), [editor])
+  const toggleBulletList = useCallback(() => editor?.chain().focus().toggleBulletList().run(), [editor])
+  const toggleOrderedList = useCallback(() => editor?.chain().focus().toggleOrderedList().run(), [editor])
+  const toggleTaskList = useCallback(() => editor?.chain().focus().toggleTaskList().run(), [editor])
+  const toggleBlockquote = useCallback(() => editor?.chain().focus().toggleBlockquote().run(), [editor])
+  const alignLeft = useCallback(() => editor?.chain().focus().setTextAlign("left").run(), [editor])
+  const alignCenter = useCallback(() => editor?.chain().focus().setTextAlign("center").run(), [editor])
+  const alignRight = useCallback(() => editor?.chain().focus().setTextAlign("right").run(), [editor])
+  const setHorizontalRule = useCallback(() => editor?.chain().focus().setHorizontalRule().run(), [editor])
+  const undo = useCallback(() => editor?.chain().focus().undo().run(), [editor])
+  const redo = useCallback(() => editor?.chain().focus().redo().run(), [editor])
 
   if (!editor) return null
 
@@ -336,73 +389,73 @@ export default function EditorPage() {
 
       {/* Toolbar */}
       <div className="border-b px-4 py-1 flex items-center gap-1 overflow-x-auto bg-muted/30">
-        <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} isActive={editor.isActive("bold")} title="加粗 (Ctrl+B)">
+        <ToolbarButton onClick={toggleBold} isActive={editor.isActive("bold")} title="加粗 (Ctrl+B)">
           <Bold className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} isActive={editor.isActive("italic")} title="斜体 (Ctrl+I)">
+        <ToolbarButton onClick={toggleItalic} isActive={editor.isActive("italic")} title="斜体 (Ctrl+I)">
           <Italic className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} isActive={editor.isActive("underline")} title="下划线 (Ctrl+U)">
+        <ToolbarButton onClick={toggleUnderline} isActive={editor.isActive("underline")} title="下划线 (Ctrl+U)">
           <UnderlineIcon className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} isActive={editor.isActive("strike")} title="删除线">
+        <ToolbarButton onClick={toggleStrike} isActive={editor.isActive("strike")} title="删除线">
           <Strikethrough className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} isActive={editor.isActive("code")} title="行内代码">
+        <ToolbarButton onClick={toggleCode} isActive={editor.isActive("code")} title="行内代码">
           <Code className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleHighlight().run()} isActive={editor.isActive("highlight")} title="高亮">
+        <ToolbarButton onClick={toggleHighlight} isActive={editor.isActive("highlight")} title="高亮">
           <Highlighter className="h-4 w-4" />
         </ToolbarButton>
 
         <Separator orientation="vertical" className="h-6 mx-1" />
 
-        <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} isActive={editor.isActive("heading", { level: 1 })} title="标题 1">
+        <ToolbarButton onClick={toggleHeading1} isActive={editor.isActive("heading", { level: 1 })} title="标题 1">
           <Heading1 className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} isActive={editor.isActive("heading", { level: 2 })} title="标题 2">
+        <ToolbarButton onClick={toggleHeading2} isActive={editor.isActive("heading", { level: 2 })} title="标题 2">
           <Heading2 className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} isActive={editor.isActive("heading", { level: 3 })} title="标题 3">
+        <ToolbarButton onClick={toggleHeading3} isActive={editor.isActive("heading", { level: 3 })} title="标题 3">
           <Heading3 className="h-4 w-4" />
         </ToolbarButton>
 
         <Separator orientation="vertical" className="h-6 mx-1" />
 
-        <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} isActive={editor.isActive("bulletList")} title="无序列表">
+        <ToolbarButton onClick={toggleBulletList} isActive={editor.isActive("bulletList")} title="无序列表">
           <List className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} isActive={editor.isActive("orderedList")} title="有序列表">
+        <ToolbarButton onClick={toggleOrderedList} isActive={editor.isActive("orderedList")} title="有序列表">
           <ListOrdered className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleTaskList().run()} isActive={editor.isActive("taskList")} title="任务列表">
+        <ToolbarButton onClick={toggleTaskList} isActive={editor.isActive("taskList")} title="任务列表">
           <CheckSquare className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleBlockquote().run()} isActive={editor.isActive("blockquote")} title="引用块">
+        <ToolbarButton onClick={toggleBlockquote} isActive={editor.isActive("blockquote")} title="引用块">
           <Quote className="h-4 w-4" />
         </ToolbarButton>
 
         <Separator orientation="vertical" className="h-6 mx-1" />
 
-        <ToolbarButton onClick={() => editor.chain().focus().setTextAlign("left").run()} isActive={editor.isActive({ textAlign: "left" })} title="左对齐">
+        <ToolbarButton onClick={alignLeft} isActive={editor.isActive({ textAlign: "left" })} title="左对齐">
           <AlignLeft className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().setTextAlign("center").run()} isActive={editor.isActive({ textAlign: "center" })} title="居中">
+        <ToolbarButton onClick={alignCenter} isActive={editor.isActive({ textAlign: "center" })} title="居中">
           <AlignCenter className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().setTextAlign("right").run()} isActive={editor.isActive({ textAlign: "right" })} title="右对齐">
+        <ToolbarButton onClick={alignRight} isActive={editor.isActive({ textAlign: "right" })} title="右对齐">
           <AlignRight className="h-4 w-4" />
         </ToolbarButton>
 
         <Separator orientation="vertical" className="h-6 mx-1" />
 
-        <ToolbarButton onClick={() => editor.chain().focus().setHorizontalRule().run()} title="分割线">
+        <ToolbarButton onClick={setHorizontalRule} title="分割线">
           <Minus className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().undo().run()} title="撤销 (Ctrl+Z)">
+        <ToolbarButton onClick={undo} title="撤销 (Ctrl+Z)">
           <Undo className="h-4 w-4" />
         </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().redo().run()} title="重做 (Ctrl+Y)">
+        <ToolbarButton onClick={redo} title="重做 (Ctrl+Y)">
           <Redo className="h-4 w-4" />
         </ToolbarButton>
       </div>
