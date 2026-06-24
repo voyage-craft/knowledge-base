@@ -130,7 +130,7 @@ async def get_document(
     )
     doc = result.scalar_one_or_none()
     if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail="文档不存在")
     return DocumentResponse.model_validate(doc)
 
 @router.put("/{doc_id}", response_model=DocumentResponse)
@@ -149,7 +149,7 @@ async def update_document(
     )
     doc = result.scalar_one_or_none()
     if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail="文档不存在")
 
     update_data = data.model_dump(exclude_unset=True)
 
@@ -203,7 +203,7 @@ async def delete_document(
     )
     doc = result.scalar_one_or_none()
     if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail="文档不存在")
 
     doc.status = "deleted"
     await db.commit()

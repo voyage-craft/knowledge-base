@@ -68,13 +68,25 @@ def create_app() -> FastAPI:
         license_info={"name": "MIT"},
     )
 
-    # Combined middleware: request ID + security headers + performance tracking
+    # Combined middleware: request ID + security headers + body size limit
     # Using @app.middleware("http") avoids BaseHTTPMiddleware buffering issues
+    MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB global limit (file uploads have their own limits)
+
     @app.middleware("http")
     async def app_middleware(request: Request, call_next):
         # Request ID
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         request.state.request_id = request_id
+
+        # Global request body size limit (skip file upload endpoints)
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_BODY_SIZE:
+            if "/import" not in request.url.path and "/upload" not in request.url.path:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=413,
+                    content={"code": "PAYLOAD_TOO_LARGE", "message": "请求体过大"},
+                )
 
         # Performance tracking
         start = time.perf_counter()

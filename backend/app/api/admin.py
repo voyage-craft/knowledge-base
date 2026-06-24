@@ -3,9 +3,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
 from app.core.security import hash_password
+from app.core.deps import require_admin
 from app.models.user import User
 from app.api.auth import get_current_user_dep
-from app.api.settings import require_admin
 from app.schemas.admin import (
     AdminUserResponse,
     AdminCreateUserRequest,
