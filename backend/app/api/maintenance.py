@@ -129,10 +129,14 @@ async def cleanup_data(
         )
         docs_to_delete = deleted_docs.scalars().all()
         for doc in docs_to_delete:
-            # 删除关联的版本
-            await db.execute(
+            # 先删除关联的版本
+            versions_result = await db.execute(
                 select(DocumentVersion).where(DocumentVersion.document_id == doc.id)
             )
+            for version in versions_result.scalars().all():
+                await db.delete(version)
+                result.deleted_versions += 1
+            # 再删除文档
             await db.delete(doc)
             result.deleted_documents += 1
 

@@ -190,17 +190,21 @@ async def batch_tag_operation(
     affected_count = 0
 
     if request.action == "add":
-        # 添加标签（忽略已存在的）
+        # 添加标签（先检查是否已存在）
         for doc_id in valid_doc_ids:
             for tag_id in valid_tag_ids:
-                try:
+                # 检查是否已存在
+                existing = await db.execute(
+                    select(document_tags).where(
+                        document_tags.c.document_id == doc_id,
+                        document_tags.c.tag_id == tag_id,
+                    )
+                )
+                if not existing.first():
                     await db.execute(
                         document_tags.insert().values(document_id=doc_id, tag_id=tag_id)
-                        .prefix_with("OR IGNORE")
                     )
                     affected_count += 1
-                except Exception:
-                    pass
 
     elif request.action == "remove":
         # 移除标签
@@ -221,13 +225,9 @@ async def batch_tag_operation(
                 document_tags.delete().where(document_tags.c.document_id == doc_id)
             )
             for tag_id in valid_tag_ids:
-                try:
-                    await db.execute(
-                        document_tags.insert().values(document_id=doc_id, tag_id=tag_id)
-                        .prefix_with("OR IGNORE")
-                    )
-                except Exception:
-                    pass
+                await db.execute(
+                    document_tags.insert().values(document_id=doc_id, tag_id=tag_id)
+                )
             affected_count += len(valid_tag_ids)
 
     await db.commit()
