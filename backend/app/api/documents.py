@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 from fastapi.responses import Response
 from app.core.database import get_db
+from app.core.deps import get_document_or_404
 from app.models.document import Document, DocumentVersion, Folder, Tag, document_tags
 from app.schemas.document import (
     DocumentCreate, DocumentUpdate, DocumentResponse, DocumentListResponse,
@@ -118,19 +119,9 @@ async def create_document(
 
 @router.get("/{doc_id}", response_model=DocumentResponse)
 async def get_document(
-    doc_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user_dep),
+    doc: Document = Depends(get_document_or_404),
 ):
-    result = await db.execute(
-        select(Document).where(
-            Document.id == doc_id,
-            Document.user_id == current_user.id,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="文档不存在")
+    """Get a single document by ID (ownership verified by dependency)."""
     return DocumentResponse.model_validate(doc)
 
 @router.put("/{doc_id}", response_model=DocumentResponse)
@@ -191,23 +182,13 @@ async def update_document(
 
 @router.delete("/{doc_id}")
 async def delete_document(
-    doc_id: int,
+    doc: Document = Depends(get_document_or_404),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user_dep),
 ):
-    result = await db.execute(
-        select(Document).where(
-            Document.id == doc_id,
-            Document.user_id == current_user.id,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="文档不存在")
-
+    """Soft delete a document (ownership verified by dependency)."""
     doc.status = "deleted"
     await db.commit()
-    return {"message": "Document deleted"}
+    return {"message": "文档已删除"}
 
 
 @router.post("/batch-delete")

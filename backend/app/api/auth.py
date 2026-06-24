@@ -22,11 +22,19 @@ settings = get_settings()
 # Security scheme for JWT authentication
 security_scheme = HTTPBearer(auto_error=False)
 
-# Dependency for getting current user from JWT
-async def get_current_user_dep(
-    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
-    db: AsyncSession = Depends(get_db),
+# Internal helper for user authentication
+async def _get_current_user(
+    credentials: HTTPAuthorizationCredentials,
+    db: AsyncSession,
+    allow_password_change: bool = False,
 ) -> User:
+    """Core authentication logic shared by all auth dependencies.
+
+    Args:
+        credentials: JWT credentials from request
+        db: Database session
+        allow_password_change: If True, skip must_change_password check
+    """
     if not credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未认证")
 
@@ -35,12 +43,8 @@ async def get_current_user_dep(
     except ValueError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效或过期的Token")
 
-    # Validate token type - only access tokens allowed
     if payload.get("type") != "access":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的Token类型"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的Token类型")
 
     try:
         user_id = int(payload["sub"])
@@ -56,8 +60,8 @@ async def get_current_user_dep(
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账户已禁用")
 
-    # Enforce password change if required (except for auth endpoints which handle this themselves)
-    if getattr(user, "must_change_password", False):
+    # Enforce password change unless explicitly allowed
+    if not allow_password_change and getattr(user, "must_change_password", False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="需要修改密码，请先修改密码后再继续操作",
@@ -66,41 +70,22 @@ async def get_current_user_dep(
     return user
 
 
+# Dependency for getting current user from JWT
+async def get_current_user_dep(
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Get current authenticated user. Rejects if password change required."""
+    return await _get_current_user(credentials, db, allow_password_change=False)
+
+
 async def get_current_user_allow_password_change(
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """Like get_current_user_dep but allows access when must_change_password is True.
+    """Get current user, allows access even when must_change_password is True.
     Used only for the change-password endpoint."""
-    if not credentials:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未认证")
-
-    try:
-        payload = decode_token(credentials.credentials)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效或过期的Token")
-
-    if payload.get("type") != "access":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的Token类型"
-        )
-
-    try:
-        user_id = int(payload["sub"])
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的Token")
-
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
-
-    if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账户已禁用")
-
-    return user
+    return await _get_current_user(credentials, db, allow_password_change=True)
 
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("5/minute")
