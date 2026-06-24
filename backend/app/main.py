@@ -304,7 +304,7 @@ app = create_app()
 
 @app.get("/api/health")
 async def health_check():
-    """Health check endpoint with system status."""
+    """Health check endpoint - safe for public exposure."""
     from app.core.version import SYSTEM_VERSION
     from app.core.database import AsyncSessionLocal
     from sqlalchemy import text
@@ -316,13 +316,14 @@ async def health_check():
         "checks": {}
     }
 
-    # Database check
+    # Database check - log details, return safe status only
     try:
         async with AsyncSessionLocal() as session:
             await session.execute(text("SELECT 1"))
         health_status["checks"]["database"] = "ok"
     except Exception as e:
-        health_status["checks"]["database"] = f"error: {str(e)}"
+        logger.error("Health check: database error: %s", e)
+        health_status["checks"]["database"] = "error"
         health_status["status"] = "degraded"
 
     # LLM service check (non-blocking)

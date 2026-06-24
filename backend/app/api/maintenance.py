@@ -183,37 +183,49 @@ async def backup_database(
     admin: User = Depends(require_admin),
 ):
     """备份数据库"""
+    import re as _re
+    import sqlite3
+
     db_path = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
     if not os.path.exists(db_path):
         raise HTTPException(status_code=404, detail="数据库文件不存在")
 
     # 创建备份目录
-    backup_dir = Path("backups")
+    backup_dir = Path("backups").resolve()
     backup_dir.mkdir(exist_ok=True)
 
-    # 生成备份文件名
+    # 生成备份文件名 - 仅允许安全字符
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_name = request.backup_name or f"backup_{timestamp}"
-    backup_path = backup_dir / f"{backup_name}.db"
+    raw_name = request.backup_name or f"backup_{timestamp}"
+    safe_name = _re.sub(r"[^a-zA-Z0-9_\-.]", "_", raw_name).strip("_.")[:64]
+    if not safe_name:
+        safe_name = f"backup_{timestamp}"
+
+    backup_path = (backup_dir / f"{safe_name}.db").resolve()
+
+    # Path traversal protection: ensure backup is inside backup_dir
+    if not str(backup_path).startswith(str(backup_dir)):
+        raise HTTPException(status_code=400, detail="无效的备份名称")
 
     try:
-        # 使用SQLite的VACUUM INTO进行在线备份
-        import sqlite3
+        # Use sqlite3 module with safe path (no SQL string interpolation)
         source = sqlite3.connect(db_path)
+        # VACUUM INTO requires a string literal in SQL, but we've sanitized the path
         source.execute(f"VACUUM INTO '{backup_path}'")
         source.close()
 
         backup_size = os.path.getsize(backup_path) / (1024 * 1024)
         logger.info("数据库备份完成: %s (%.2f MB)", backup_path, backup_size)
 
+        # Return safe name only, not full path
         return {
             "message": "备份成功",
-            "backup_path": str(backup_path),
+            "backup_name": safe_name,
             "backup_size_mb": round(backup_size, 2),
         }
     except Exception as e:
         logger.error("备份失败: %s", e)
-        raise HTTPException(status_code=500, detail=f"备份失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="备份失败")
 
 
 @router.get("/backups")
@@ -282,7 +294,8 @@ async def detailed_health_check(
         await db.execute(text("SELECT 1"))
         checks["database"] = {"status": "ok", "message": "连接正常"}
     except Exception as e:
-        checks["database"] = {"status": "error", "message": str(e)}
+        logger.error("Health check DB error: %s", e)
+        checks["database"] = {"status": "error", "message": "连接失败"}
 
     # 磁盘空间检查
     try:
@@ -295,7 +308,8 @@ async def detailed_health_check(
                 "total_gb": round(disk_usage.total / (1024**3), 2),
             }
     except Exception as e:
-        checks["disk"] = {"status": "error", "message": str(e)}
+        logger.error("Health check disk error: %s", e)
+        checks["disk"] = {"status": "error", "message": "检查失败"}
 
     # LLM服务检查
     try:

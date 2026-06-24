@@ -141,7 +141,7 @@ async def refresh_token(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        payload = decode_token(data.refresh_token)
+        payload = decode_token(data.refresh_token, check_blacklist=False)
         if payload.get("type") != "refresh":
             raise ValueError("Not a refresh token")
     except ValueError:
@@ -153,6 +153,9 @@ async def refresh_token(
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户已禁用或不存在")
+
+    # Blacklist old refresh token to prevent reuse (token rotation)
+    blacklist_token(data.refresh_token)
 
     access_token = create_access_token({"sub": payload["sub"], "username": payload["username"]})
     new_refresh = create_refresh_token({"sub": payload["sub"], "username": payload["username"]})
